@@ -1,0 +1,38 @@
+services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    environment:
+      MONGO_URI: mongodb://mongo:27017/filinglens
+      PORT: 4000
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-me}
+      NIM_API_KEY: ${NIM_API_KEY:-}
+      NIM_EMBED_MODEL: ${NIM_EMBED_MODEL:-nvidia/nv-embedqa-e5-v5}
+      LLM_SUMMARY_MODEL: ${LLM_SUMMARY_MODEL:-meta/llama-3.3-70b-instruct}
+      LLM_QA_MODEL: ${LLM_QA_MODEL:-meta/llama-3.3-70b-instruct}
+      CORS_ORIGIN: http://localhost:5173
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:4000
+
+volumes:
+  mongo_data:
