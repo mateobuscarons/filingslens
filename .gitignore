@@ -32,6 +32,7 @@ Thumbs.db
 # Local planning docs
 Plan.md
 progress.md
+frontend-progress.md
 
 # Lock files
 frontend/package-lock.json
