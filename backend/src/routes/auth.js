@@ -78,6 +78,42 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
   }
 });
 
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'VALIDATION', message: 'email required' });
+    const user = await User.findOne({ email });
+    if (!user) return res.json({ ok: true }); // don't reveal whether email exists
+    const token = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    user.resetToken = token;
+    user.resetTokenExpiry = new Date(Date.now() + 3600_000); // 1 hour
+    await user.save();
+    res.json({ ok: true, resetToken: token }); // dev: token in response body
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ error: 'VALIDATION', message: 'token and password required' });
+    }
+    const user = await User.findOne({ resetToken: token, resetTokenExpiry: { $gt: new Date() } });
+    if (!user) {
+      return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Token is invalid or expired' });
+    }
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.resetToken = null;
+    user.resetTokenExpiry = null;
+    await user.save();
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function publicUser(user, firm) {
   return {
     id: user._id,
