@@ -1,29 +1,18 @@
 import React from 'react';
 import { Link, useLocation } from 'react-router-dom';
 
-const LINKS = [
-  { label: 'Dashboard', to: '/dashboard' },
-  { label: 'Analyses',  to: '/analyses/new' },
-  { label: 'Reports',   to: '/reports' },
-];
-
 export default function ProductNav() {
   const { pathname } = useLocation();
 
-  function isActive(to) {
-    if (to === '/dashboard') return pathname === '/dashboard';
-    if (to === '/analyses/new') return pathname.startsWith('/analyses');
-    if (to === '/reports') return pathname.startsWith('/reports');
-    return false;
+  function isActive(prefix, exact = false) {
+    return exact ? pathname === prefix : pathname.startsWith(prefix);
   }
 
   return (
     <nav className="product-nav">
-      {LINKS.map(({ label, to }) => (
-        <Link key={to} to={to} className={isActive(to) ? 'active' : ''}>
-          {label}
-        </Link>
-      ))}
+      <Link to="/dashboard" className={isActive('/dashboard', true) ? 'active' : ''}>Dashboard</Link>
+      <Link to="/analyses/new" className={isActive('/analyses') ? 'active' : ''}>Analyses</Link>
+      <Link to="/reports" className={isActive('/reports') ? 'active' : ''}>Reports</Link>
     </nav>
   );
 }
