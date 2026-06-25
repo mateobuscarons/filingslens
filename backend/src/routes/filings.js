@@ -3,7 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
 import { z } from 'zod';
-import { requireAuth, requireFirmAdmin } from '../middleware/auth.js';
+import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { Filing } from '../models/filing.js';
 import { Company } from '../models/company.js';
@@ -28,27 +28,34 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 const uploadSchema = z.object({
-  companyId: z.string().min(1),
+  companyName: z.string().min(2).max(120),
   fiscalYear: z.coerce.number().int().min(2000).max(2099),
 });
 
-router.post('/upload', requireAuth, requireFirmAdmin, upload.single('file'), validate(uploadSchema), async (req, res, next) => {
+router.post('/upload', requireAuth, upload.single('file'), validate(uploadSchema), async (req, res, next) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'VALIDATION', message: 'PDF file required', fields: { file: 'Required' } });
-    if (!getNimClient()) return res.status(503).json({ error: 'NIM_UNAVAILABLE', message: 'NIM_API_KEY not configured' });
-
-    const { companyId, fiscalYear } = req.body;
-    if (!(await Company.findById(companyId))) {
-      return res.status(404).json({ error: 'NOT_FOUND', message: 'Company not found' });
+    if (!req.file) {
+      return res.status(400).json({ error: 'VALIDATION', message: 'PDF file required', fields: { file: 'Required' } });
+    }
+    if (!getNimClient()) {
+      return res.status(503).json({ error: 'NIM_UNAVAILABLE', message: 'NIM_API_KEY not configured' });
     }
 
-    const fileName = `${companyId}-${fiscalYear}.pdf`;
+    const { companyName, fiscalYear } = req.body;
+    const nameLower = companyName.trim().toLowerCase();
+    const company = await Company.findOneAndUpdate(
+      { nameLower },
+      { $setOnInsert: { name: companyName.trim(), nameLower } },
+      { upsert: true, new: true }
+    );
+
+    const fileName = `${company._id}-${fiscalYear}.pdf`;
     const targetPath = path.join(UPLOAD_DIR, fileName);
     await fs.rename(req.file.path, targetPath);
 
     const filing = await Filing.findOneAndUpdate(
-      { companyId, fiscalYear },
-      { $set: { companyId, fiscalYear, fileName, ingestStatus: 'pending' } },
+      { companyId: company._id, fiscalYear },
+      { $set: { companyId: company._id, fiscalYear, fileName, ingestStatus: 'pending' } },
       { upsert: true, new: true }
     );
 
@@ -57,7 +64,7 @@ router.post('/upload', requireAuth, requireFirmAdmin, upload.single('file'), val
       Filing.updateOne({ _id: filing._id }, { $set: { ingestStatus: 'failed' } });
     });
 
-    res.status(202).json({ filingId: filing._id, status: 'pending' });
+    res.status(202).json({ filingId: filing._id, companyId: company._id, status: 'pending' });
   } catch (err) {
     next(err);
   }
