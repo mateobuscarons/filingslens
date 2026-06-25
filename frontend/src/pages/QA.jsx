@@ -173,7 +173,7 @@ export default function QA() {
                 ref={inputRef}
                 value={text}
                 onChange={e => setText(e.target.value)}
-                placeholder="Wie hat sich der Umsatz entwickelt?"
+                placeholder="Ask anything about this company's filings…"
                 disabled={loading || !session}
                 style={{
                   flex: 1, padding: '16px 20px', borderRadius: 999,
