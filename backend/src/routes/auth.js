@@ -3,56 +3,92 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { User } from '../models/user.js';
 import { InvestmentFirm } from '../models/firm.js';
-import { PricingPlan } from '../models/pricingPlan.js';
-import { Subscription } from '../models/subscription.js';
+import { TeamInvite } from '../models/teamInvite.js';
 import { signToken } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 
 const router = Router();
 
-const registerSchema = z
-  .object({
-    mode: z.enum(['solo', 'team']),
+// One register endpoint, three branches selected by `mode`:
+//   solo       — new user, no firm.
+//   team-new   — new user becomes firm_admin of a brand new firm with N seats.
+//   team-join  — new user joins an existing firm via an invite code.
+const registerSchema = z.discriminatedUnion('mode', [
+  z.object({
+    mode: z.literal('solo'),
     name: z.string().min(2),
     email: z.string().email(),
     password: z.string().min(8),
-    firmName: z.string().min(2).optional(),
-  })
-  .refine((d) => d.mode !== 'team' || !!d.firmName, {
-    message: 'firmName is required for team registration',
-    path: ['firmName'],
-  });
+  }),
+  z.object({
+    mode: z.literal('team-new'),
+    name: z.string().min(2),
+    email: z.string().email(),
+    password: z.string().min(8),
+    firmName: z.string().min(2),
+    seatLimit: z.number().int().min(5).max(25),
+  }),
+  z.object({
+    mode: z.literal('team-join'),
+    name: z.string().min(2),
+    email: z.string().email(),
+    password: z.string().min(8),
+    inviteCode: z.string().min(4),
+  }),
+]);
 
 router.post('/register', validate(registerSchema), async (req, res, next) => {
   try {
-    const { mode, name, email, password, firmName } = req.body;
-    if (await User.findOne({ email })) {
+    const body = req.body;
+
+    if (await User.findOne({ email: body.email })) {
       return res.status(409).json({
         error: 'EMAIL_TAKEN',
         message: 'An account with this email already exists',
         fields: { email: 'Already registered' },
       });
     }
-    const passwordHash = await bcrypt.hash(password, 10);
 
+    const passwordHash = await bcrypt.hash(body.password, 10);
     let firm = null;
     let role = 'solo';
-    if (mode === 'team') {
-      firm = await InvestmentFirm.create({ name: firmName, seatLimit: 5 });
+
+    if (body.mode === 'team-new') {
+      firm = await InvestmentFirm.create({ name: body.firmName, seatLimit: body.seatLimit });
       role = 'firm_admin';
     }
 
-    const user = await User.create({ name, email, passwordHash, role, firmId: firm?._id || null });
-
-    const plan = await PricingPlan.findOne({ key: mode === 'team' ? 'team' : 'solo' });
-    if (plan) {
-      await Subscription.create({
-        subscriberType: mode === 'team' ? 'InvestmentFirm' : 'User',
-        subscriberId: mode === 'team' ? firm._id : user._id,
-        planId: plan._id,
-        status: 'active',
-      });
+    if (body.mode === 'team-join') {
+      const invite = await TeamInvite.findOne({ code: body.inviteCode.trim().toUpperCase() });
+      if (!invite || invite.status !== 'pending') {
+        return res.status(400).json({
+          error: 'INVALID_INVITE',
+          message: 'Invite code is invalid or already used',
+          fields: { inviteCode: 'Invalid or used' },
+        });
+      }
+      firm = await InvestmentFirm.findById(invite.firmId);
+      if (!firm) {
+        return res.status(400).json({ error: 'INVALID_INVITE', message: 'Firm no longer exists' });
+      }
+      // Recheck seats — another invite may have been used since this one was created.
+      const seats = await User.countDocuments({ firmId: firm._id });
+      if (seats >= firm.seatLimit) {
+        return res.status(409).json({ error: 'SEAT_LIMIT', message: 'Firm is full' });
+      }
+      role = 'firm_analyst';
+      invite.status = 'accepted';
+      invite.acceptedAt = new Date();
+      await invite.save();
     }
+
+    const user = await User.create({
+      name: body.name,
+      email: body.email,
+      passwordHash,
+      role,
+      firmId: firm?._id || null,
+    });
 
     res.status(201).json({ token: signToken(user), user: publicUser(user, firm) });
   } catch (err) {
@@ -73,42 +109,6 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
     }
     const firm = user.firmId ? await InvestmentFirm.findById(user.firmId) : null;
     res.json({ token: signToken(user), user: publicUser(user, firm) });
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post('/forgot-password', async (req, res, next) => {
-  try {
-    const { email } = req.body;
-    if (!email) return res.status(400).json({ error: 'VALIDATION', message: 'email required' });
-    const user = await User.findOne({ email });
-    if (!user) return res.json({ ok: true }); // don't reveal whether email exists
-    const token = Math.random().toString(36).slice(2) + Date.now().toString(36);
-    user.resetToken = token;
-    user.resetTokenExpiry = new Date(Date.now() + 3600_000); // 1 hour
-    await user.save();
-    res.json({ ok: true, resetToken: token }); // dev: token in response body
-  } catch (err) {
-    next(err);
-  }
-});
-
-router.post('/reset-password', async (req, res, next) => {
-  try {
-    const { token, password } = req.body;
-    if (!token || !password) {
-      return res.status(400).json({ error: 'VALIDATION', message: 'token and password required' });
-    }
-    const user = await User.findOne({ resetToken: token, resetTokenExpiry: { $gt: new Date() } });
-    if (!user) {
-      return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Token is invalid or expired' });
-    }
-    user.passwordHash = await bcrypt.hash(password, 10);
-    user.resetToken = null;
-    user.resetTokenExpiry = null;
-    await user.save();
-    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
