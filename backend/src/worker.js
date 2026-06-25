@@ -1,4 +1,5 @@
 import { FilingComparison } from './models/comparison.js';
+import { Filing } from './models/filing.js';
 import { Finding } from './models/finding.js';
 import { Citation } from './models/citation.js';
 import { Paragraph } from './models/paragraph.js';
@@ -7,10 +8,13 @@ import {
   buildIndex,
   findBestMatch,
   diffParagraphs,
+  isUsefulParagraph,
   scoreModified,
   scoreAddedOrRemoved,
   impactBucket,
-  summarizeModifiedFinding,
+  dedupFindings,
+  summarizeFinding,
+  runPool,
   COMPARE_CONSTANTS,
 } from './ai/compare.js';
 
@@ -20,36 +24,54 @@ async function setStatus(comparison, status, extra = {}) {
   await comparison.save();
 }
 
+// Public API. The /comparisons route fires this and returns 202 immediately;
+// the FE polls /comparisons/:id to track the stages below.
+//
+// Pipeline:
+//   1. Load both filings' paragraphs (skip page-fragments).
+//   2. Match each current paragraph to its best prev (cosine).
+//   3. Classify each pair as unchanged / modified / added; collect removed.
+//   4. Score materiality, dedup, hard-cap to 10 modified + 3 added + 2 removed.
+//   5. Summarize all 15 via 70B (concurrency 4).
+//   6. Persist 15 Findings + their Citations.
 export async function runComparison(comparisonId) {
   const comparison = await FilingComparison.findById(comparisonId);
   if (!comparison) return;
+
   try {
     await setStatus(comparison, 'comparing', { progress: 0.05 });
 
-    const [currParas, prevParas] = await Promise.all([
+    const [currFiling, prevFiling] = await Promise.all([
+      Filing.findById(comparison.currentFilingId).lean(),
+      Filing.findById(comparison.previousFilingId).lean(),
+    ]);
+
+    const [currAll, prevAll] = await Promise.all([
       Paragraph.find({ filingId: comparison.currentFilingId }).lean(),
       Paragraph.find({ filingId: comparison.previousFilingId }).lean(),
     ]);
+
+    const currParas = currAll.filter(isUsefulParagraph);
+    const prevParas = prevAll.filter(isUsefulParagraph);
     if (!currParas.length || !prevParas.length) {
-      throw new Error('One of the filings has no ingested paragraphs');
+      throw new Error('One of the filings has no ingested paragraphs after filtering');
     }
 
+    // Step 2 + 3: classify
     const prevIndex = buildIndex(prevParas);
-    const matched = new Set();
-    const rawFindings = [];
+    const matchedPrev = new Set();
+    const raw = { modified: [], added: [], removed: [] };
 
     for (const curr of currParas) {
-      const q = normalize(curr.embedding);
-      const { index, similarity } = findBestMatch(q, prevIndex);
-
+      const { index, similarity } = findBestMatch(normalize(curr.embedding), prevIndex);
       if (similarity > COMPARE_CONSTANTS.SIMILAR_THRESHOLD) {
-        matched.add(index);
+        matchedPrev.add(index);
         continue;
       }
       if (similarity >= COMPARE_CONSTANTS.MATCH_THRESHOLD) {
-        matched.add(index);
+        matchedPrev.add(index);
         const prev = prevParas[index];
-        rawFindings.push({
+        raw.modified.push({
           type: 'modified',
           section: curr.section,
           currentParagraphId: curr._id,
@@ -61,7 +83,7 @@ export async function runComparison(comparisonId) {
           _currText: curr.text,
         });
       } else {
-        rawFindings.push({
+        raw.added.push({
           type: 'added',
           section: curr.section,
           currentParagraphId: curr._id,
@@ -72,11 +94,10 @@ export async function runComparison(comparisonId) {
         });
       }
     }
-
     for (let i = 0; i < prevParas.length; i++) {
-      if (matched.has(i)) continue;
+      if (matchedPrev.has(i)) continue;
       const prev = prevParas[i];
-      rawFindings.push({
+      raw.removed.push({
         type: 'removed',
         section: prev.section,
         currentParagraphId: null,
@@ -87,31 +108,35 @@ export async function runComparison(comparisonId) {
       });
     }
 
-    rawFindings.sort((a, b) => b.materialityScore - a.materialityScore);
-    const counts = { modified: 0, added: 0, removed: 0 };
-    for (const f of rawFindings) counts[f.type]++;
+    // Step 4: sort, dedup, cap per type
+    const surfaced = [
+      ...take(raw.modified, COMPARE_CONSTANTS.TOP_MODIFIED),
+      ...take(raw.added, COMPARE_CONSTANTS.TOP_ADDED),
+      ...take(raw.removed, COMPARE_CONSTANTS.TOP_REMOVED),
+    ];
 
     await setStatus(comparison, 'summarizing', {
-      counts,
-      progress: 0.7,
-      overallScore: average(rawFindings.slice(0, 20).map((f) => f.materialityScore)),
+      progress: 0.6,
+      counts: {
+        modified: countOf(surfaced, 'modified'),
+        added: countOf(surfaced, 'added'),
+        removed: countOf(surfaced, 'removed'),
+      },
+      overallScore: averageScore(surfaced),
     });
 
-    const summaryTargets = rawFindings
-      .slice(0, COMPARE_CONSTANTS.TOP_SUMMARIES)
-      .map((f, idx) => ({ idx, f }))
-      .filter(({ f }) => f.type === 'modified');
-
-    const summaries = new Map();
-    await runPool(summaryTargets, COMPARE_CONSTANTS.SUMMARY_CONCURRENCY, async ({ idx, f }) => {
+    // Step 5: summarize all 15 in parallel
+    await runPool(surfaced, COMPARE_CONSTANTS.SUMMARY_CONCURRENCY, async (f) => {
       try {
-        summaries.set(idx, await summarizeModifiedFinding(f._prevText, f._currText));
+        f.summary = (await summarizeFinding(f))?.trim() || null;
       } catch (err) {
-        console.warn(`[summary] #${idx} failed: ${err.message}`);
+        console.warn(`[summary] ${f.type} failed: ${err.message}`);
+        f.summary = null;
       }
     });
 
-    const findingsToInsert = rawFindings.map((f, i) => ({
+    // Step 6: persist
+    const findingDocs = surfaced.map((f) => ({
       comparisonId: comparison._id,
       type: f.type,
       section: f.section,
@@ -120,18 +145,15 @@ export async function runComparison(comparisonId) {
       similarity: f.similarity,
       materialityScore: f.materialityScore,
       impact: impactBucket(f.materialityScore),
-      summary: summaries.get(i) || null,
+      summary: f.summary,
       excerpt: f.excerpt,
       diff:
         f.type === 'modified'
           ? diffParagraphs(f._prevText, f._currText)
-          : f.type === 'added'
-          ? [{ op: 'add', text: f.excerpt }]
-          : [{ op: 'rem', text: f.excerpt }],
+          : [{ op: f.type === 'added' ? 'add' : 'rem', text: f.excerpt }],
     }));
-
-    const insertedFindings = await Finding.insertMany(findingsToInsert);
-    await insertFindingCitations(insertedFindings, rawFindings, prevParas, currParas);
+    const inserted = await Finding.insertMany(findingDocs);
+    await insertCitations(inserted, surfaced, prevParas, currParas, prevFiling, currFiling);
 
     await setStatus(comparison, 'completed', { progress: 1 });
   } catch (err) {
@@ -140,33 +162,56 @@ export async function runComparison(comparisonId) {
   }
 }
 
-async function insertFindingCitations(insertedFindings, rawFindings, prevParas, currParas) {
-  const docs = [];
+// ---- Helpers ---------------------------------------------------------------
+
+function take(bucket, n) {
+  bucket.sort((a, b) => b.materialityScore - a.materialityScore);
+  return dedupFindings(bucket).slice(0, n);
+}
+
+function countOf(arr, type) {
+  return arr.reduce((sum, f) => sum + (f.type === type ? 1 : 0), 0);
+}
+
+function averageScore(arr) {
+  return arr.length ? arr.reduce((s, f) => s + f.materialityScore, 0) / arr.length : 0;
+}
+
+async function insertCitations(inserted, surfaced, prevParas, currParas, prevFiling, currFiling) {
   const prevById = new Map(prevParas.map((p) => [p._id.toString(), p]));
   const currById = new Map(currParas.map((p) => [p._id.toString(), p]));
-  for (let i = 0; i < insertedFindings.length; i++) {
-    const inserted = insertedFindings[i];
-    const raw = rawFindings[i];
-    if (raw.previousParagraphId) {
-      const p = prevById.get(raw.previousParagraphId.toString());
-      if (p) docs.push({ sourceType: 'Finding', sourceId: inserted._id, paragraphId: p._id, page: p.page, excerpt: p.text.slice(0, 200) });
+  const docs = [];
+  for (let i = 0; i < inserted.length; i++) {
+    const f = surfaced[i];
+    const findingId = inserted[i]._id;
+    if (f.previousParagraphId) {
+      const p = prevById.get(f.previousParagraphId.toString());
+      if (p) {
+        docs.push({
+          sourceType: 'Finding',
+          sourceId: findingId,
+          paragraphId: p._id,
+          filingId: prevFiling._id,
+          filingYear: prevFiling.fiscalYear,
+          page: p.page,
+          excerpt: p.text.slice(0, 220),
+        });
+      }
     }
-    if (raw.currentParagraphId) {
-      const p = currById.get(raw.currentParagraphId.toString());
-      if (p) docs.push({ sourceType: 'Finding', sourceId: inserted._id, paragraphId: p._id, page: p.page, excerpt: p.text.slice(0, 200) });
+    if (f.currentParagraphId) {
+      const p = currById.get(f.currentParagraphId.toString());
+      if (p) {
+        docs.push({
+          sourceType: 'Finding',
+          sourceId: findingId,
+          paragraphId: p._id,
+          filingId: currFiling._id,
+          filingYear: currFiling.fiscalYear,
+          page: p.page,
+          excerpt: p.text.slice(0, 220),
+        });
+      }
     }
   }
   if (docs.length) await Citation.insertMany(docs);
-}
-
-function average(arr) {
-  return arr.length ? arr.reduce((s, n) => s + n, 0) / arr.length : 0;
-}
-
-async function runPool(items, concurrency, worker) {
-  const queue = items.slice();
-  const workers = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-    while (queue.length) await worker(queue.shift());
-  });
-  await Promise.all(workers);
 }

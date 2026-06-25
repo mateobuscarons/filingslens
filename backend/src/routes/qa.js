@@ -69,6 +69,8 @@ router.post('/sessions/:id/questions', requireAuth, validate(askSchema), async (
         sourceType: 'Question',
         sourceId: question._id,
         paragraphId: s.paragraphId,
+        filingId: s.filingId,
+        filingYear: s.fiscalYear,
         page: s.page,
         excerpt: s.excerpt,
       }));

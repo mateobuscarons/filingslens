@@ -2,15 +2,23 @@ import { diffWordsWithSpace } from 'diff';
 import { chat } from './llm.js';
 import { normalize, dot } from './vec.js';
 
-const SIMILAR_THRESHOLD = 0.95;
-const MATCH_THRESHOLD = 0.70;
-const TOP_SUMMARIES = 10;
+// ---- Tunable constants -----------------------------------------------------
+
+const SIMILAR_THRESHOLD = 0.95;   // paragraphs above this are "unchanged"
+const MATCH_THRESHOLD   = 0.70;   // below MATCH = added; in [MATCH..SIMILAR) = modified
+
+const MIN_PARAGRAPH_LENGTH = 60;  // filter out page numbers, table fragments, etc.
+const JACCARD_DUPLICATE   = 0.80; // findings sharing >=80% tokens are duplicates
+
+const TOP_MODIFIED = 10;
+const TOP_ADDED    = 3;
+const TOP_REMOVED  = 2;
 const SUMMARY_CONCURRENCY = 4;
 
 const KEYWORDS = [
   'risiko', 'risk', 'wesentlich', 'material', 'rückgang', 'decline',
   'rekord', 'record', 'einbruch', 'verlust', 'loss', 'haftung',
-  'liability', 'rechtsstreit', 'litigation', 'krise', 'crisis', 'einfluss',
+  'liability', 'rechtsstreit', 'litigation', 'krise', 'crisis',
   'auswirk', 'impact', 'ergebnis', 'gewinn', 'profit', 'umsatz', 'revenue',
 ];
 
@@ -19,31 +27,34 @@ const SECTION_MARKERS = [
   'vergütung', 'segment', 'ebit', 'cash flow', 'kapital',
 ];
 
+// ---- Paragraph filtering & cosine matching --------------------------------
+
+export function isUsefulParagraph(p) {
+  if (!p?.text || p.text.length < MIN_PARAGRAPH_LENGTH) return false;
+  return /[a-zA-ZäöüÄÖÜß]{4,}/.test(p.text);
+}
+
 export function buildIndex(paragraphs) {
-  const vectors = paragraphs.map((p) => normalize(p.embedding));
-  return { paragraphs, vectors };
+  return { paragraphs, vectors: paragraphs.map((p) => normalize(p.embedding)) };
 }
 
 export function findBestMatch(queryVec, index) {
-  let best = -1;
-  let bestIdx = -1;
+  let best = -1, bestIdx = -1;
   for (let i = 0; i < index.vectors.length; i++) {
     const s = dot(queryVec, index.vectors[i]);
-    if (s > best) {
-      best = s;
-      bestIdx = i;
-    }
+    if (s > best) { best = s; bestIdx = i; }
   }
   return { index: bestIdx, similarity: best };
 }
 
 export function diffParagraphs(prevText, currText) {
-  const parts = diffWordsWithSpace(prevText, currText);
-  return parts.map((p) => ({
+  return diffWordsWithSpace(prevText, currText).map((p) => ({
     op: p.added ? 'add' : p.removed ? 'rem' : 'eq',
     text: p.value,
   }));
 }
+
+// ---- Materiality scoring ---------------------------------------------------
 
 function extractNumbers(text) {
   const matches = [...text.matchAll(/(?<![\w.])\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?(?!\w)/g)];
@@ -52,7 +63,7 @@ function extractNumbers(text) {
     .filter((n) => !Number.isNaN(n) && n > 0);
 }
 
-export function numericDelta(prevText, currText) {
+function numericDelta(prevText, currText) {
   const a = extractNumbers(prevText).sort((x, y) => y - x).slice(0, 5);
   const b = extractNumbers(currText).sort((x, y) => y - x).slice(0, 5);
   if (!a.length || !b.length) return 0;
@@ -66,40 +77,37 @@ export function numericDelta(prevText, currText) {
   return Math.min(max, 1);
 }
 
-export function keywordSignal(text) {
+function keywordSignal(text) {
   const lower = text.toLowerCase();
   let hits = 0;
   for (const kw of KEYWORDS) if (lower.includes(kw)) hits++;
   return Math.min(hits / 4, 1);
 }
 
-export function sectionWeight(text, sectionLabel) {
-  const blob = `${sectionLabel} ${text.slice(0, 200)}`.toLowerCase();
+function sectionWeight(text, label) {
+  const blob = `${label} ${text.slice(0, 200)}`.toLowerCase();
   for (const m of SECTION_MARKERS) if (blob.includes(m)) return 1;
   return 0.4;
 }
 
-function lengthBonus(text) {
-  return Math.min(text.length / 400, 1);
+function lengthBonus(text) { return Math.min(text.length / 400, 1); }
+function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+
+export function scoreModified(prev, curr) {
+  return clamp01(
+    0.45 * numericDelta(prev.text, curr.text) +
+    0.30 * keywordSignal(curr.text) +
+    0.15 * sectionWeight(curr.text, curr.section) +
+    0.10 * lengthBonus(curr.text)
+  );
 }
 
-export function scoreModified(prevPara, currPara) {
-  const nd = numericDelta(prevPara.text, currPara.text);
-  const kw = keywordSignal(currPara.text);
-  const sw = sectionWeight(currPara.text, currPara.section);
-  const lb = lengthBonus(currPara.text);
-  return clamp01(0.45 * nd + 0.30 * kw + 0.15 * sw + 0.10 * lb);
-}
-
-export function scoreAddedOrRemoved(para) {
-  const kw = keywordSignal(para.text);
-  const sw = sectionWeight(para.text, para.section);
-  const lb = lengthBonus(para.text);
-  return clamp01(0.55 * kw + 0.25 * sw + 0.20 * lb);
-}
-
-function clamp01(x) {
-  return x < 0 ? 0 : x > 1 ? 1 : x;
+export function scoreAddedOrRemoved(p) {
+  return clamp01(
+    0.55 * keywordSignal(p.text) +
+    0.25 * sectionWeight(p.text, p.section) +
+    0.20 * lengthBonus(p.text)
+  );
 }
 
 export function impactBucket(score) {
@@ -108,27 +116,98 @@ export function impactBucket(score) {
   return 'low';
 }
 
-export async function summarizeModifiedFinding(prevText, currText) {
-  const messages = [
-    {
-      role: 'system',
-      content: [
-        'You summarize one change between matching excerpts from a German annual report.',
-        'Reply with exactly one sentence in English, max 25 words.',
-        'Include the metric name and BOTH the old value and the new value when both are visible in the text (e.g. "X decreased from A to B").',
-        'Numbers must appear verbatim in the excerpts. Never invent figures or units.',
-        'Note: German numbers use "." as thousands separator and "," as decimal point. Treat 1.373 as one-thousand-three-hundred-seventy-three.',
-        'Skip percentage calculations unless both raw values are explicit.',
-        'If no clear quantitative change is present, describe the qualitative shift in one sentence.',
-        'No commentary, no recommendations.',
-      ].join('\n'),
-    },
-    {
-      role: 'user',
-      content: `PREVIOUS (older filing):\n${prevText}\n\nCURRENT (newer filing):\n${currText}`,
-    },
-  ];
-  return chat('summary', messages, { temperature: 0.1, maxTokens: 120, timeoutMs: 45000 });
+// ---- Dedup (greedy by Jaccard token overlap) ------------------------------
+
+function tokenize(text) {
+  return new Set((text.toLowerCase().match(/[\wäöüß]+/g) || []).filter((t) => t.length >= 3));
 }
 
-export const COMPARE_CONSTANTS = { SIMILAR_THRESHOLD, MATCH_THRESHOLD, TOP_SUMMARIES, SUMMARY_CONCURRENCY };
+function jaccard(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0;
+  for (const t of a) if (b.has(t)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+// Greedy dedup. `findings` must already be sorted by descending materiality.
+export function dedupFindings(findings) {
+  const kept = [];
+  for (const f of findings) {
+    const tokens = tokenize(f.excerpt);
+    let dupe = false;
+    for (const k of kept) {
+      if (jaccard(tokens, k._tokens) >= JACCARD_DUPLICATE) { dupe = true; break; }
+    }
+    if (!dupe) {
+      f._tokens = tokens;
+      kept.push(f);
+    }
+  }
+  for (const k of kept) delete k._tokens;
+  return kept;
+}
+
+// ---- LLM summaries (one prompt per type, single sentence) -----------------
+
+const COMMON_RULES = [
+  'Reply with EXACTLY one declarative sentence in the language of the excerpt, max 30 words.',
+  'Numbers must appear verbatim in the excerpt. Never invent figures.',
+  'German numbers use "." as thousands separator and "," as decimal point.',
+  'Do not self-correct. Do not write "Note:", "Correction:" or any commentary.',
+];
+
+const SYSTEM_MODIFIED = [
+  'You compare two excerpts from a German annual report. The first is from the PREVIOUS filing, the second from the CURRENT filing.',
+  'Describe the change between them. If a metric appears with old and new values, write "<metric> changed from <old> to <new>".',
+  ...COMMON_RULES,
+].join('\n');
+
+const SYSTEM_ADDED = [
+  'You read one excerpt newly present in the CURRENT filing of a German annual report — it was not in the previous filing.',
+  'Describe what is new in plain prose.',
+  ...COMMON_RULES,
+].join('\n');
+
+const SYSTEM_REMOVED = [
+  'You read one excerpt from a PREVIOUS filing that no longer appears in the current filing.',
+  'Describe what was removed in plain prose.',
+  ...COMMON_RULES,
+].join('\n');
+
+export async function summarizeFinding(finding) {
+  let system, user;
+  if (finding.type === 'modified') {
+    system = SYSTEM_MODIFIED;
+    user = `PREVIOUS:\n${finding._prevText}\n\nCURRENT:\n${finding._currText}`;
+  } else if (finding.type === 'added') {
+    system = SYSTEM_ADDED;
+    user = finding.excerpt;
+  } else {
+    system = SYSTEM_REMOVED;
+    user = finding.excerpt;
+  }
+  return chat(
+    'summary',
+    [{ role: 'system', content: system }, { role: 'user', content: user }],
+    { temperature: 0.1, maxTokens: 120, timeoutMs: 45000 }
+  );
+}
+
+// ---- Runtime helpers -------------------------------------------------------
+
+export async function runPool(items, concurrency, worker) {
+  const queue = items.slice();
+  const runners = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
+    while (queue.length) await worker(queue.shift());
+  });
+  await Promise.all(runners);
+}
+
+export const COMPARE_CONSTANTS = {
+  SIMILAR_THRESHOLD,
+  MATCH_THRESHOLD,
+  TOP_MODIFIED,
+  TOP_ADDED,
+  TOP_REMOVED,
+  SUMMARY_CONCURRENCY,
+};
