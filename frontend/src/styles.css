@@ -181,6 +181,9 @@ a.citation-meta { text-decoration: underline; text-underline-offset: 3px; }
 .diff-line { padding: 13px 14px; border-radius: 14px; background: var(--bg); }
 .diff-line.removed { background: var(--red-soft); color: var(--red); }
 .diff-line.added { background: var(--accent-soft); color: var(--ink); }
+.diff-flow { margin: 0; color: var(--ink); font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
+.diff-rem { background: var(--red-soft); color: var(--red); padding: 0 4px; border-radius: 4px; text-decoration: line-through; }
+.diff-add { background: var(--accent-soft); color: var(--ink); padding: 0 4px; border-radius: 4px; }
 .diff-side .panel-sub { color: #c6d1ca; }
 .diff-actions { display: grid; gap: 12px; margin-top: 30px; }
 

@@ -24,7 +24,6 @@ export default function Billing() {
           <h2>{plan?.name} plan · €{latest}/mo</h2>
           <p className="lead">
             Status: {sub.status} · started {new Date(sub.startedAt).toLocaleDateString()}.
-            Plan and seat changes are not available in-app — contact support.
           </p>
         </div>
 
