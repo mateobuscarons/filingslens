@@ -13,7 +13,7 @@ const JACCARD_DUPLICATE   = 0.80; // findings sharing >=80% tokens are duplicate
 const TOP_MODIFIED = 10;
 const TOP_ADDED    = 3;
 const TOP_REMOVED  = 2;
-const SUMMARY_CONCURRENCY = 4;
+const SUMMARY_CONCURRENCY = 6;
 
 const KEYWORDS = [
   'risiko', 'risk', 'wesentlich', 'material', 'rückgang', 'decline',
