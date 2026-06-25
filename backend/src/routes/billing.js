@@ -1,14 +1,25 @@
 import { Router } from 'express';
-import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
-import { validate } from '../middleware/validate.js';
 import { Subscription } from '../models/subscription.js';
 import { PricingPlan } from '../models/pricingPlan.js';
 import { Payment } from '../models/payment.js';
+import { InvestmentFirm } from '../models/firm.js';
 
 const router = Router();
 
-async function currentSubscription(user) {
+// Subscriptions are immutable post-signup: one POST /billing/subscribe creates
+// both the Subscription and the first Payment. There is no upgrade endpoint,
+// no cancel endpoint, no PATCH on the firm.
+//
+// Pricing is server-computed:
+//   amount = plan.basePrice + max(0, seats - plan.baseSeats) * plan.extraSeatPrice
+//   seats  = firm.seatLimit for team plans, 1 for solo
+
+function computeAmount(plan, seats) {
+  return plan.basePrice + Math.max(0, seats - plan.baseSeats) * plan.extraSeatPrice;
+}
+
+async function findSubscription(user) {
   if (user.firmId) {
     return Subscription.findOne({ subscriberType: 'InvestmentFirm', subscriberId: user.firmId });
   }
@@ -16,53 +27,53 @@ async function currentSubscription(user) {
 }
 
 router.get('/plans', requireAuth, async (req, res) => {
-  const plans = await PricingPlan.find().sort({ monthlyPrice: 1 });
+  const plans = await PricingPlan.find().sort({ basePrice: 1 });
   res.json(plans);
 });
 
 router.get('/subscription', requireAuth, async (req, res) => {
-  const sub = await currentSubscription(req.user);
-  if (!sub) return res.status(404).json({ error: 'NOT_FOUND', message: 'No subscription found' });
+  const sub = await findSubscription(req.user);
+  if (!sub) return res.status(404).json({ error: 'NOT_FOUND', message: 'No subscription yet' });
   const plan = await PricingPlan.findById(sub.planId);
-  const payments = await Payment.find({ subscriptionId: sub._id }).sort({ paidAt: -1 }).limit(20);
+  const payments = await Payment.find({ subscriptionId: sub._id }).sort({ paidAt: -1 });
   res.json({ subscription: sub, plan, payments });
 });
 
-const upgradeSchema = z.object({ planKey: z.enum(['solo', 'team']) });
-
-router.post('/subscription', requireAuth, validate(upgradeSchema), async (req, res, next) => {
+router.post('/subscribe', requireAuth, async (req, res, next) => {
   try {
-    const plan = await PricingPlan.findOne({ key: req.body.planKey });
-    if (!plan) return res.status(404).json({ error: 'NOT_FOUND', message: 'Plan not found' });
-    const sub = await currentSubscription(req.user);
-    if (!sub) {
-      return res.status(404).json({ error: 'NOT_FOUND', message: 'No subscription found — sign up first' });
+    if (await findSubscription(req.user)) {
+      return res.status(409).json({
+        error: 'ALREADY_SUBSCRIBED',
+        message: 'A subscription already exists for this account',
+      });
     }
-    sub.planId = plan._id;
-    sub.status = 'active';
-    sub.canceledAt = null;
-    await sub.save();
+
+    const isTeam = !!req.user.firmId;
+    const plan = await PricingPlan.findOne({ key: isTeam ? 'team' : 'solo' });
+    if (!plan) return res.status(500).json({ error: 'CONFIG', message: 'Pricing plan missing — reseed' });
+
+    let seats = 1;
+    if (isTeam) {
+      const firm = await InvestmentFirm.findById(req.user.firmId);
+      seats = firm.seatLimit;
+    }
+    const amount = computeAmount(plan, seats);
+
+    const sub = await Subscription.create({
+      subscriberType: isTeam ? 'InvestmentFirm' : 'User',
+      subscriberId: isTeam ? req.user.firmId : req.user._id,
+      planId: plan._id,
+      status: 'active',
+    });
     const payment = await Payment.create({
       subscriptionId: sub._id,
-      amount: plan.monthlyPrice,
+      amount,
       currency: 'EUR',
       status: 'succeeded',
       method: 'mock',
     });
-    res.json({ subscription: sub, plan, payment });
-  } catch (err) {
-    next(err);
-  }
-});
 
-router.delete('/subscription', requireAuth, async (req, res, next) => {
-  try {
-    const sub = await currentSubscription(req.user);
-    if (!sub) return res.status(404).json({ error: 'NOT_FOUND', message: 'No subscription found' });
-    sub.status = 'canceled';
-    sub.canceledAt = new Date();
-    await sub.save();
-    res.json(sub);
+    res.status(201).json({ subscription: sub, plan, payment, amount });
   } catch (err) {
     next(err);
   }
