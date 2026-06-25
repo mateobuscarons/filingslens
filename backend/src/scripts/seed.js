@@ -2,91 +2,66 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import { connectDb } from '../db.js';
 import { PricingPlan } from '../models/pricingPlan.js';
-import { Company } from '../models/company.js';
-import { Filing } from '../models/filing.js';
 import { InvestmentFirm } from '../models/firm.js';
 import { User } from '../models/user.js';
 import { Subscription } from '../models/subscription.js';
+import { Payment } from '../models/payment.js';
 
-const DEMO_PASSWORD = 'Demo1234!';
+const PLANS = [
+  { key: 'solo', name: 'Solo', basePrice: 29, baseSeats: 1, extraSeatPrice: 0 },
+  { key: 'team', name: 'Team', basePrice: 149, baseSeats: 5, extraSeatPrice: 25 },
+];
+
+const RECOVERY_EMAIL = 'elena.steiner@frankfurt-investments.de';
+const RECOVERY_PASSWORD = 'Demo1234!';
 
 async function ensurePlans() {
-  const plans = [
-    { key: 'solo', name: 'Solo', seatLimit: 1, monthlyPrice: 29 },
-    { key: 'team', name: 'Team', seatLimit: 5, monthlyPrice: 149 },
-  ];
-  for (const p of plans) {
+  for (const p of PLANS) {
     await PricingPlan.updateOne({ key: p.key }, { $set: p }, { upsert: true });
   }
-  console.log('[seed] plans ok');
+  console.log('[seed] plans: solo (€29) + team (€149 base + €25/extra seat)');
 }
 
-async function ensureCompanies() {
-  const companies = [
-    { name: 'Siemens AG', isin: 'DE0007236101', sector: 'Industrials' },
-    { name: 'SAP SE', isin: 'DE0007164600', sector: 'Information Technology' },
-    { name: 'Allianz SE', isin: 'DE0008404005', sector: 'Financials' },
-  ];
-  for (const c of companies) {
-    await Company.updateOne({ isin: c.isin }, { $set: c }, { upsert: true });
-  }
-  console.log('[seed] companies ok');
-}
-
-async function ensureFilings() {
-  const siemens = await Company.findOne({ isin: 'DE0007236101' });
-  if (!siemens) return;
-  const filings = [
-    { companyId: siemens._id, fiscalYear: 2024, documentType: 'annual_report' },
-    { companyId: siemens._id, fiscalYear: 2025, documentType: 'annual_report' },
-  ];
-  for (const f of filings) {
-    await Filing.updateOne(
-      { companyId: f.companyId, fiscalYear: f.fiscalYear },
-      { $set: f },
-      { upsert: true }
-    );
-  }
-  console.log('[seed] filings ok');
-}
-
-async function ensureDemoUsers() {
-  const passwordHash = await bcrypt.hash(DEMO_PASSWORD, 10);
-  const teamPlan = await PricingPlan.findOne({ key: 'team' });
-  const soloPlan = await PricingPlan.findOne({ key: 'solo' });
-
+async function ensureRecoveryUser() {
   let firm = await InvestmentFirm.findOne({ name: 'Frankfurt Investments' });
   if (!firm) firm = await InvestmentFirm.create({ name: 'Frankfurt Investments', seatLimit: 5 });
 
-  const upsertUser = async (email, name, role, firmId) => {
-    let user = await User.findOne({ email });
-    if (!user) {
-      user = await User.create({ email, name, role, firmId, passwordHash });
-    }
-    return user;
-  };
+  let elena = await User.findOne({ email: RECOVERY_EMAIL });
+  if (!elena) {
+    elena = await User.create({
+      name: 'Elena Steiner',
+      email: RECOVERY_EMAIL,
+      passwordHash: await bcrypt.hash(RECOVERY_PASSWORD, 10),
+      role: 'firm_admin',
+      firmId: firm._id,
+    });
+  }
 
-  const elena = await upsertUser('elena.steiner@frankfurt-investments.de', 'Elena Steiner', 'firm_admin', firm._id);
-  const daniel = await upsertUser('daniel.chen@chen-research.de', 'Daniel Chen', 'solo', null);
+  const teamPlan = await PricingPlan.findOne({ key: 'team' });
+  let sub = await Subscription.findOne({ subscriberType: 'InvestmentFirm', subscriberId: firm._id });
+  if (!sub) {
+    sub = await Subscription.create({
+      subscriberType: 'InvestmentFirm',
+      subscriberId: firm._id,
+      planId: teamPlan._id,
+      status: 'active',
+    });
+    await Payment.create({
+      subscriptionId: sub._id,
+      amount: teamPlan.basePrice,
+      currency: 'EUR',
+      status: 'succeeded',
+      method: 'mock',
+    });
+  }
 
-  const ensureSub = async (subscriberType, subscriberId, planId) => {
-    const existing = await Subscription.findOne({ subscriberType, subscriberId });
-    if (!existing) await Subscription.create({ subscriberType, subscriberId, planId, status: 'active' });
-  };
-  await ensureSub('InvestmentFirm', firm._id, teamPlan._id);
-  await ensureSub('User', daniel._id, soloPlan._id);
-
-  console.log('[seed] demo users ok');
-  console.log(`         Elena:  elena.steiner@frankfurt-investments.de / ${DEMO_PASSWORD}  (firm admin)`);
-  console.log(`         Daniel: daniel.chen@chen-research.de / ${DEMO_PASSWORD}  (solo)`);
+  console.log(`[seed] recovery user: ${RECOVERY_EMAIL} / ${RECOVERY_PASSWORD} (firm admin, Team plan, 5 seats)`);
 }
 
 async function main() {
   await connectDb();
   await ensurePlans();
-  await ensureCompanies();
-  await ensureFilings();
-  await ensureDemoUsers();
+  await ensureRecoveryUser();
   console.log('[seed] done');
   process.exit(0);
 }
