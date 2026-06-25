@@ -1,10 +1,11 @@
 import { Router } from 'express';
-import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { z } from 'zod';
 import { requireAuth, requireFirmAdmin } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { InvestmentFirm } from '../models/firm.js';
 import { User } from '../models/user.js';
+import { TeamInvite } from '../models/teamInvite.js';
 
 const router = Router();
 
@@ -17,11 +18,20 @@ function assertFirmAccess(req, firm) {
   }
 }
 
+async function loadFirmOr404(req, res) {
+  const firm = await InvestmentFirm.findById(req.params.id);
+  if (!firm) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Firm not found' });
+    return null;
+  }
+  assertFirmAccess(req, firm);
+  return firm;
+}
+
 router.get('/:id', requireAuth, async (req, res, next) => {
   try {
-    const firm = await InvestmentFirm.findById(req.params.id);
-    if (!firm) return res.status(404).json({ error: 'NOT_FOUND', message: 'Firm not found' });
-    assertFirmAccess(req, firm);
+    const firm = await loadFirmOr404(req, res);
+    if (!firm) return;
     const memberCount = await User.countDocuments({ firmId: firm._id });
     res.json({ ...firm.toObject(), memberCount });
   } catch (err) {
@@ -29,31 +39,41 @@ router.get('/:id', requireAuth, async (req, res, next) => {
   }
 });
 
-const patchSchema = z.object({
-  name: z.string().min(2).max(120).optional(),
-  seatLimit: z.number().int().min(1).max(50).optional(),
-});
-
-router.patch('/:id', requireAuth, requireFirmAdmin, validate(patchSchema), async (req, res, next) => {
+router.get('/:id/members', requireAuth, async (req, res, next) => {
   try {
-    const firm = await InvestmentFirm.findById(req.params.id);
-    if (!firm) return res.status(404).json({ error: 'NOT_FOUND', message: 'Firm not found' });
-    assertFirmAccess(req, firm);
-    Object.assign(firm, req.body);
-    await firm.save();
-    res.json(firm);
+    const firm = await loadFirmOr404(req, res);
+    if (!firm) return;
+    const members = await User.find({ firmId: firm._id }).select('name email role createdAt');
+    res.json(members);
   } catch (err) {
     next(err);
   }
 });
 
-router.get('/:id/members', requireAuth, async (req, res, next) => {
+router.delete('/:id/members/:userId', requireAuth, requireFirmAdmin, async (req, res, next) => {
   try {
-    const firm = await InvestmentFirm.findById(req.params.id);
-    if (!firm) return res.status(404).json({ error: 'NOT_FOUND', message: 'Firm not found' });
-    assertFirmAccess(req, firm);
-    const members = await User.find({ firmId: firm._id }).select('name email role createdAt');
-    res.json(members);
+    const firm = await loadFirmOr404(req, res);
+    if (!firm) return;
+    if (req.params.userId === req.user._id.toString()) {
+      return res.status(400).json({ error: 'VALIDATION', message: 'Admins cannot remove themselves' });
+    }
+    const user = await User.findOne({ _id: req.params.userId, firmId: firm._id });
+    if (!user) return res.status(404).json({ error: 'NOT_FOUND', message: 'Member not found' });
+    await user.deleteOne();
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---- Invites ---------------------------------------------------------------
+
+router.get('/:id/invites', requireAuth, async (req, res, next) => {
+  try {
+    const firm = await loadFirmOr404(req, res);
+    if (!firm) return;
+    const invites = await TeamInvite.find({ firmId: firm._id }).sort({ createdAt: -1 });
+    res.json(invites);
   } catch (err) {
     next(err);
   }
@@ -62,55 +82,53 @@ router.get('/:id/members', requireAuth, async (req, res, next) => {
 const inviteSchema = z.object({
   name: z.string().min(2),
   email: z.string().email(),
-  password: z.string().min(8),
-  role: z.enum(['firm_admin', 'firm_analyst']).default('firm_analyst'),
 });
 
-router.post('/:id/members', requireAuth, requireFirmAdmin, validate(inviteSchema), async (req, res, next) => {
+router.post('/:id/invites', requireAuth, requireFirmAdmin, validate(inviteSchema), async (req, res, next) => {
   try {
-    const firm = await InvestmentFirm.findById(req.params.id);
-    if (!firm) return res.status(404).json({ error: 'NOT_FOUND', message: 'Firm not found' });
-    assertFirmAccess(req, firm);
-    const current = await User.countDocuments({ firmId: firm._id });
-    if (current >= firm.seatLimit) {
+    const firm = await loadFirmOr404(req, res);
+    if (!firm) return;
+
+    const members = await User.countDocuments({ firmId: firm._id });
+    const pending = await TeamInvite.countDocuments({ firmId: firm._id, status: 'pending' });
+    if (members + pending >= firm.seatLimit) {
       return res.status(409).json({
         error: 'SEAT_LIMIT',
-        message: `Firm has reached its seat limit of ${firm.seatLimit}`,
+        message: `Firm has reached its seat limit of ${firm.seatLimit} (members + pending invites)`,
       });
     }
-    const existing = await User.findOne({ email: req.body.email });
-    if (existing) {
+
+    if (await User.findOne({ email: req.body.email })) {
       return res.status(409).json({
         error: 'EMAIL_TAKEN',
         message: 'A user with this email already exists',
         fields: { email: 'Already registered' },
       });
     }
-    const passwordHash = await bcrypt.hash(req.body.password, 10);
-    const user = await User.create({
+
+    const code = crypto.randomBytes(4).toString('hex').toUpperCase();
+    const invite = await TeamInvite.create({
+      firmId: firm._id,
       name: req.body.name,
       email: req.body.email,
-      passwordHash,
-      role: req.body.role,
-      firmId: firm._id,
+      code,
     });
-    res.status(201).json({ id: user._id, name: user.name, email: user.email, role: user.role });
+    res.status(201).json(invite);
   } catch (err) {
     next(err);
   }
 });
 
-router.delete('/:id/members/:userId', requireAuth, requireFirmAdmin, async (req, res, next) => {
+router.delete('/:id/invites/:inviteId', requireAuth, requireFirmAdmin, async (req, res, next) => {
   try {
-    const firm = await InvestmentFirm.findById(req.params.id);
-    if (!firm) return res.status(404).json({ error: 'NOT_FOUND', message: 'Firm not found' });
-    assertFirmAccess(req, firm);
-    if (req.params.userId === req.user._id.toString()) {
-      return res.status(400).json({ error: 'VALIDATION', message: 'Admins cannot remove themselves' });
+    const firm = await loadFirmOr404(req, res);
+    if (!firm) return;
+    const invite = await TeamInvite.findOne({ _id: req.params.inviteId, firmId: firm._id });
+    if (!invite) return res.status(404).json({ error: 'NOT_FOUND', message: 'Invite not found' });
+    if (invite.status === 'pending') {
+      invite.status = 'revoked';
+      await invite.save();
     }
-    const user = await User.findOne({ _id: req.params.userId, firmId: firm._id });
-    if (!user) return res.status(404).json({ error: 'NOT_FOUND', message: 'Member not found' });
-    await user.deleteOne();
     res.json({ ok: true });
   } catch (err) {
     next(err);
