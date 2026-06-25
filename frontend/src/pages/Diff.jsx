@@ -116,7 +116,7 @@ export default function Diff() {
             <div className="diff-actions">
               {citations.map((c, i) => (
                 <span key={i} className="chip accent">
-                  Citation · p. {c.page}
+                  FY{c.filingYear} · p. {c.page}
                 </span>
               ))}
               <button

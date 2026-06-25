@@ -1,57 +1,83 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { apiFetch, ApiError } from '../api.js';
+import { apiFetch, apiUpload, ApiError } from '../api.js';
 import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
+
+// One-page "upload + compare" flow. The page walks a small state machine:
+//   idle              user fills the form
+//   uploading-current uploading first PDF
+//   parsing-current   polling GET /filings/:id until ready
+//   uploading-prev    uploading second PDF
+//   parsing-prev      polling GET /filings/:id until ready
+//   creating          POST /comparisons, then navigate to /analyses/:id
+// On any error we drop back to idle and show a toast.
+const POLL_MS = 4000;
 
 export default function Setup() {
   const navigate = useNavigate();
   const toast = useToast();
 
-  const [companies, setCompanies] = useState([]);
-  const [filings, setFilings] = useState([]);
-  const [companyId, setCompanyId] = useState('');
-  const [currentFilingId, setCurrentFilingId] = useState('');
-  const [previousFilingId, setPreviousFilingId] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [companyName, setCompanyName] = useState('');
+  const [currentYear, setCurrentYear] = useState(2025);
+  const [currentFile, setCurrentFile] = useState(null);
+  const [previousYear, setPreviousYear] = useState(2024);
+  const [previousFile, setPreviousFile] = useState(null);
 
-  useEffect(() => {
-    apiFetch('/companies').then(setCompanies);
-  }, []);
+  const [phase, setPhase] = useState('idle');
+  const [status, setStatus] = useState('');
 
-  useEffect(() => {
-    if (!companyId) { setFilings([]); setCurrentFilingId(''); setPreviousFilingId(''); return; }
-    apiFetch(`/filings?companyId=${companyId}`).then(data => {
-      setFilings(data);
-      setCurrentFilingId(data[0]?._id ?? '');
-      setPreviousFilingId(data[1]?._id ?? '');
-    });
-  }, [companyId]);
+  async function uploadOne(label, year, file) {
+    const fd = new FormData();
+    fd.append('companyName', companyName.trim());
+    fd.append('fiscalYear', String(year));
+    fd.append('file', file);
+    setStatus(`Uploading ${label} (${year})…`);
+    const res = await apiUpload('/filings/upload', fd);
+    return res.filingId;
+  }
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    setError('');
-    setLoading(true);
-    try {
-      const comparison = await apiFetch('/comparisons', {
-        method: 'POST',
-        body: JSON.stringify({ currentFilingId, previousFilingId }),
-      });
-      navigate(`/analyses/${comparison._id}`);
-    } catch (err) {
-      if (err instanceof ApiError) {
-        setError(err.message);
-        toast.error(err.message);
-      }
-    } finally {
-      setLoading(false);
+  async function waitUntilReady(label, filingId) {
+    setStatus(`Parsing & embedding ${label}…`);
+    while (true) {
+      const f = await apiFetch(`/filings/${filingId}`);
+      if (f.ingestStatus === 'ready') return f;
+      if (f.ingestStatus === 'failed') throw new ApiError(500, 'INGEST_FAILED', `Could not process ${label} PDF`);
+      await new Promise((r) => setTimeout(r, POLL_MS));
     }
   }
 
-  const selectedCompany = companies.find(c => c._id === companyId);
-  const currentFiling = filings.find(f => f._id === currentFilingId);
-  const previousFiling = filings.find(f => f._id === previousFilingId);
+  async function handleSubmit(e) {
+    e.preventDefault();
+    if (!currentFile || !previousFile) {
+      toast.error('Pick both PDFs first.');
+      return;
+    }
+    try {
+      setPhase('uploading-current');
+      const currentId = await uploadOne('current filing', currentYear, currentFile);
+      setPhase('parsing-current');
+      await waitUntilReady(`current filing (${currentYear})`, currentId);
+
+      setPhase('uploading-prev');
+      const previousId = await uploadOne('previous filing', previousYear, previousFile);
+      setPhase('parsing-prev');
+      await waitUntilReady(`previous filing (${previousYear})`, previousId);
+
+      setPhase('creating');
+      setStatus('Starting comparison…');
+      const comp = await apiFetch('/comparisons', {
+        method: 'POST',
+        body: JSON.stringify({ currentFilingId: currentId, previousFilingId: previousId }),
+      });
+      navigate(`/analyses/${comp._id}`);
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Upload failed.');
+      setPhase('idle'); setStatus('');
+    }
+  }
+
+  const busy = phase !== 'idle';
 
   return (
     <div className="screen">
@@ -60,107 +86,52 @@ export default function Setup() {
 
         <div>
           <p className="eyebrow">New analysis</p>
-          <h2>Pick the current and previous filing.</h2>
+          <h2>Upload two annual reports.</h2>
           <p className="lead">
-            FilingLens compares two annual reports paragraph by paragraph and ranks the highest-impact findings.
+            FilingLens parses both PDFs, ranks the most material changes, and
+            attaches a citation to every finding.
           </p>
         </div>
 
         <div className="two-col">
           <div className="panel setup-card">
             <form onSubmit={handleSubmit}>
-              {/* Company selector */}
-              <div style={{ marginBottom: 28 }}>
-                <div className="field-label" style={{ marginBottom: 8 }}>Company</div>
-                <select
-                  value={companyId}
-                  onChange={e => setCompanyId(e.target.value)}
+              <div className="login-field">
+                <div className="field-label">Company name</div>
+                <input
+                  className="field-input"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  placeholder="Siemens AG"
                   required
-                  style={{
-                    width: '100%', padding: '14px 18px', borderRadius: 16,
-                    border: '1px solid var(--line)', background: 'var(--bg)',
-                    fontSize: 15, fontWeight: 700, color: 'var(--ink)',
-                    fontFamily: 'inherit', cursor: 'pointer',
-                  }}
-                >
-                  <option value="">Select a company…</option>
-                  {companies.map(c => (
-                    <option key={c._id} value={c._id}>{c.name}</option>
-                  ))}
-                </select>
+                  disabled={busy}
+                />
               </div>
 
-              {selectedCompany && (
-                <>
-                  <h3 className="panel-title">{selectedCompany.name}</h3>
-                  {selectedCompany.isin && (
-                    <p className="panel-sub">ISIN {selectedCompany.isin} · {selectedCompany.sector}</p>
-                  )}
-                  <div className="filing-pair">
-                    <div className="filing-card">
-                      <div className="row-title">Current filing</div>
-                      <div style={{ marginTop: 12 }}>
-                        <select
-                          value={currentFilingId}
-                          onChange={e => setCurrentFilingId(e.target.value)}
-                          required
-                          style={{
-                            width: '100%', padding: '10px 14px', borderRadius: 12,
-                            border: '1px solid var(--line)', background: 'var(--surface)',
-                            fontSize: 13, fontWeight: 700, color: 'var(--ink)', fontFamily: 'inherit',
-                          }}
-                        >
-                          {filings.map(f => (
-                            <option key={f._id} value={f._id}>{selectedCompany.name} {f.fiscalYear}</option>
-                          ))}
-                        </select>
-                      </div>
-                      {currentFiling?.sourceUrl && (
-                        <div className="row-sub" style={{ marginTop: 10 }}>
-                          <a href={currentFiling.sourceUrl} target="_blank" rel="noopener">Open official PDF</a>
-                        </div>
-                      )}
-                    </div>
+              <div className="filing-pair">
+                <FilingInput
+                  title="Current filing"
+                  year={currentYear}
+                  onYear={setCurrentYear}
+                  file={currentFile}
+                  onFile={setCurrentFile}
+                  disabled={busy}
+                />
+                <FilingInput
+                  title="Previous filing"
+                  year={previousYear}
+                  onYear={setPreviousYear}
+                  file={previousFile}
+                  onFile={setPreviousFile}
+                  disabled={busy}
+                />
+              </div>
 
-                    <div className="filing-card">
-                      <div className="row-title">Previous filing</div>
-                      <div style={{ marginTop: 12 }}>
-                        <select
-                          value={previousFilingId}
-                          onChange={e => setPreviousFilingId(e.target.value)}
-                          required
-                          style={{
-                            width: '100%', padding: '10px 14px', borderRadius: 12,
-                            border: '1px solid var(--line)', background: 'var(--surface)',
-                            fontSize: 13, fontWeight: 700, color: 'var(--ink)', fontFamily: 'inherit',
-                          }}
-                        >
-                          {filings.map(f => (
-                            <option key={f._id} value={f._id}>{selectedCompany.name} {f.fiscalYear}</option>
-                          ))}
-                        </select>
-                      </div>
-                      {previousFiling?.sourceUrl && (
-                        <div className="row-sub" style={{ marginTop: 10 }}>
-                          <a href={previousFiling.sourceUrl} target="_blank" rel="noopener">Open official PDF</a>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {error && (
-                <p style={{ marginTop: 16, color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{error}</p>
-              )}
+              {busy && <ProgressStrip phase={phase} status={status} />}
 
               <div className="actions">
-                <button
-                  className="button"
-                  type="submit"
-                  disabled={loading || !currentFilingId || !previousFilingId}
-                >
-                  {loading ? 'Starting…' : 'Run analysis'}
+                <button className="button" type="submit" disabled={busy || !companyName || !currentFile || !previousFile}>
+                  {busy ? 'Working…' : 'Run analysis'}
                 </button>
                 <Link className="button ghost" to="/dashboard">Cancel</Link>
               </div>
@@ -172,20 +143,62 @@ export default function Setup() {
               <div>
                 <h3 className="panel-title">What happens next</h3>
                 <p className="panel-sub">
-                  FilingLens parses both reports, scores section-level changes, and attaches a source citation to each ranked finding.
+                  Each PDF is parsed page by page, paragraphs are embedded,
+                  then we compare current vs previous and surface the 15
+                  most material findings.
                 </p>
               </div>
             </div>
             <div className="backend-steps">
-              <span className="chip accent">1. Fetch both filings</span>
-              <span className="chip dark">2. Extract paragraphs</span>
-              <span className="chip dark">3. Score changes</span>
-              <span className="chip dark">4. Rank by impact</span>
-              <span className="chip dark">5. Attach citations</span>
+              <span className="chip accent">1. Upload & parse current</span>
+              <span className="chip dark">2. Upload & parse previous</span>
+              <span className="chip dark">3. Compare paragraphs</span>
+              <span className="chip dark">4. Rank by materiality</span>
+              <span className="chip dark">5. Summarize top 15</span>
             </div>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function FilingInput({ title, year, onYear, file, onFile, disabled }) {
+  return (
+    <div className="filing-card">
+      <div className="row-title">{title}</div>
+      <div style={{ marginTop: 12 }}>
+        <div className="field-label">Fiscal year</div>
+        <input
+          className="field-input"
+          type="number"
+          min={2000}
+          max={2099}
+          value={year}
+          onChange={(e) => onYear(Number(e.target.value))}
+          disabled={disabled}
+        />
+      </div>
+      <div style={{ marginTop: 12 }}>
+        <div className="field-label">PDF</div>
+        <input
+          type="file"
+          accept="application/pdf"
+          onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+          disabled={disabled}
+          required
+        />
+        {file && <div className="row-sub" style={{ marginTop: 6 }}>{file.name} · {(file.size / 1024 / 1024).toFixed(1)} MB</div>}
+      </div>
+    </div>
+  );
+}
+
+function ProgressStrip({ phase, status }) {
+  return (
+    <div className="panel" style={{ marginTop: 24, padding: '16px 20px', background: 'var(--surface)' }}>
+      <div className="row-title">{phase.replace(/-/g, ' ')}</div>
+      <div className="row-sub">{status}</div>
     </div>
   );
 }

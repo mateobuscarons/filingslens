@@ -33,9 +33,6 @@ export default function ReportsList() {
     return new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   }
 
-  const mine = reports.filter(r => !r.isShared || r.userId?._id === undefined);
-  const shared = reports.filter(r => r.isShared);
-
   return (
     <div className="screen">
       <div className="app-grid">

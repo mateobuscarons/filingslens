@@ -26,7 +26,7 @@ export default function TopBar() {
 
   function handleLogout() {
     logout();
-    navigate('/login', { replace: true });
+    navigate('/', { replace: true });
   }
 
   return (

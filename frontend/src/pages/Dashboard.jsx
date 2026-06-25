@@ -4,16 +4,13 @@ import { apiFetch } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import TopBar from '../components/TopBar.jsx';
 
-function statusLabel(status, findingsCount) {
-  if (status === 'completed') return `Completed · ${findingsCount ?? 0} changes`;
-  if (status === 'failed') return 'Failed';
+function statusLabel(c) {
+  if (c.status === 'completed') {
+    const t = (c.counts?.modified ?? 0) + (c.counts?.added ?? 0) + (c.counts?.removed ?? 0);
+    return `Completed · ${t} findings`;
+  }
+  if (c.status === 'failed') return 'Failed';
   return 'Running…';
-}
-
-function impactChip(status) {
-  if (status === 'completed') return <span className="chip soft-accent">Open</span>;
-  if (status === 'failed') return <span className="chip red">Failed</span>;
-  return <span className="chip">Running</span>;
 }
 
 export default function Dashboard() {
@@ -29,8 +26,6 @@ export default function Dashboard() {
   }, []);
 
   const firstName = user?.name?.split(' ')[0] ?? 'there';
-  const completed = comparisons.filter(c => c.status === 'completed').length;
-  const drafts = reports.filter(r => !r.isShared).length;
 
   return (
     <div className="screen">
@@ -38,71 +33,76 @@ export default function Dashboard() {
         <TopBar />
 
         <div>
-          <p className="eyebrow">Today</p>
-          <h2>Good morning, {firstName}. What changed today?</h2>
-          <p className="lead">
-            Recent comparisons, high-impact findings, and draft reports, organised around your next decision.
-          </p>
+          <p className="eyebrow">Dashboard</p>
+          <h2>Hello, {firstName}.</h2>
+          <p className="lead">Your recent comparisons and reports.</p>
         </div>
 
         <div className="metric-strip">
-          <div className="metric">
-            <div className="metric-value">{comparisons.length}</div>
-            <div className="metric-label">Recent analyses</div>
+          <Metric value={comparisons.length} label="Analyses" />
+          <Metric value={comparisons.filter((c) => c.status === 'completed').length} label="Completed" accent />
+          <Metric value={reports.length} label="Reports" />
+        </div>
+
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <h3 className="panel-title">Recent analyses</h3>
+              <p className="panel-sub">Pick up where you left off.</p>
+            </div>
+            <Link className="button accent" to="/analyses/new">New analysis</Link>
           </div>
-          <div className="metric accent">
-            <div className="metric-value">{completed}</div>
-            <div className="metric-label">Completed</div>
-          </div>
-          <div className="metric">
-            <div className="metric-value">{reports.length}</div>
-            <div className="metric-label">Draft reports</div>
+          <div className="row-list">
+            {loading && <p className="panel-sub" style={{ padding: '0 4px' }}>Loading…</p>}
+            {!loading && comparisons.length === 0 && (
+              <p className="panel-sub" style={{ padding: '0 4px' }}>No analyses yet. Start one above.</p>
+            )}
+            {comparisons.slice(0, 8).map((c) => (
+              <div className="data-row" key={c._id}>
+                <div>
+                  <div className="row-title">
+                    {c.companyId?.name ?? 'Unknown'} · {c.currentFilingId?.fiscalYear} vs {c.previousFilingId?.fiscalYear}
+                  </div>
+                  <div className="row-sub">{statusLabel(c)}</div>
+                </div>
+                <Link className="chip soft-accent" to={`/analyses/${c._id}`}>Open</Link>
+              </div>
+            ))}
           </div>
         </div>
 
-        <div className="two-col">
+        {reports.length > 0 && (
           <div className="panel">
             <div className="panel-head">
               <div>
-                <h3 className="panel-title">Recent analyses</h3>
-                <p className="panel-sub">Pick up where you left off.</p>
+                <h3 className="panel-title">Reports</h3>
+                <p className="panel-sub">Saved findings and Q&A answers.</p>
               </div>
-              <Link className="button accent" to="/analyses/new">New analysis</Link>
+              <Link className="button ghost" to="/reports">All reports</Link>
             </div>
             <div className="row-list">
-              {loading && <p className="panel-sub" style={{ padding: '0 4px' }}>Loading…</p>}
-              {!loading && comparisons.length === 0 && (
-                <p className="panel-sub" style={{ padding: '0 4px' }}>No analyses yet. Start one above.</p>
-              )}
-              {comparisons.slice(0, 5).map(c => (
-                <div className="data-row" key={c._id}>
+              {reports.slice(0, 4).map((r) => (
+                <div className="data-row" key={r._id}>
                   <div>
-                    <div className="row-title">
-                      {c.companyId?.name ?? 'Unknown'} · {c.currentFilingId?.fiscalYear} vs {c.previousFilingId?.fiscalYear}
-                    </div>
-                    <div className="row-sub">{statusLabel(c.status, c.findingsCount)}</div>
+                    <div className="row-title">{r.title}</div>
+                    <div className="row-sub">{r.isShared ? 'Shared with firm' : 'Personal draft'}</div>
                   </div>
-                  <Link className="chip soft-accent" to={`/analyses/${c._id}`}>Open</Link>
+                  <Link className="chip" to={`/reports/${r._id}`}>Open</Link>
                 </div>
               ))}
             </div>
           </div>
-
-          <div className="panel dark">
-            <div className="panel-head">
-              <div>
-                <h3 className="panel-title">Citation-first</h3>
-                <p className="panel-sub">Every change FilingLens shows comes with the source paragraph. Verify before you trust.</p>
-              </div>
-            </div>
-            <div className="row-list">
-              <span className="chip accent">Source citations</span>
-              <span className="chip dark">Paragraph-level evidence</span>
-              <span className="chip dark">Analyst notes</span>
-            </div>
-          </div>
-        </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+function Metric({ value, label, accent }) {
+  return (
+    <div className={`metric${accent ? ' accent' : ''}`}>
+      <div className="metric-value">{value}</div>
+      <div className="metric-label">{label}</div>
     </div>
   );
 }

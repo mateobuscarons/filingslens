@@ -107,7 +107,7 @@ export default function QA() {
                   "{c.excerpt}"
                 </div>
                 <span className="citation-meta">
-                  {companyName} filing · p. {c.page}
+                  {companyName} · FY{c.filingYear} · p. {c.page}
                 </span>
               </div>
             ))}

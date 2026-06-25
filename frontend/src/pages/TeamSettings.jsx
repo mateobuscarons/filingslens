@@ -4,6 +4,9 @@ import { useAuth } from '../auth.jsx';
 import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
 
+// Members list + Invites panel. Admin-only (route is wrapped in AdminRoute).
+// Invites work like dev-mode forgot-password: server returns the code,
+// admin sees it, admin shares it manually with the invitee.
 export default function TeamSettings() {
   const { user } = useAuth();
   const toast = useToast();
@@ -11,63 +14,70 @@ export default function TeamSettings() {
 
   const [firm, setFirm] = useState(null);
   const [members, setMembers] = useState([]);
-  const [loading, setLoading] = useState(true);
-
+  const [invites, setInvites] = useState([]);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [role, setRole] = useState('firm_analyst');
   const [inviting, setInviting] = useState(false);
-  const [fieldErrors, setFieldErrors] = useState({});
+  const [errors, setErrors] = useState({});
 
-  useEffect(() => {
+  async function refresh() {
     if (!firmId) return;
-    Promise.all([
+    const [f, m, i] = await Promise.all([
       apiFetch(`/firms/${firmId}`),
       apiFetch(`/firms/${firmId}/members`),
-    ]).then(([f, m]) => { setFirm(f); setMembers(m); }).finally(() => setLoading(false));
-  }, [firmId]);
+      apiFetch(`/firms/${firmId}/invites`),
+    ]);
+    setFirm(f); setMembers(m); setInvites(i);
+  }
+
+  useEffect(() => { refresh(); /* eslint-disable-line */ }, [firmId]);
 
   async function handleInvite(e) {
     e.preventDefault();
-    setFieldErrors({});
-    setInviting(true);
+    setInviting(true); setErrors({});
     try {
-      const newMember = await apiFetch(`/firms/${firmId}/members`, {
+      const invite = await apiFetch(`/firms/${firmId}/invites`, {
         method: 'POST',
-        body: JSON.stringify({ name, email, password, role }),
+        body: JSON.stringify({ name, email }),
       });
-      setMembers(prev => [...prev, newMember]);
-      setName(''); setEmail(''); setPassword(''); setRole('firm_analyst');
-      toast.success(`${newMember.name} added to the firm.`);
+      setInvites((prev) => [invite, ...prev]);
+      setName(''); setEmail('');
+      toast.success(`Invite code ${invite.code} created. Share it with ${invite.name}.`);
     } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.code === 'SEAT_LIMIT') toast.error(err.message);
-        else setFieldErrors(err.fields || { _form: err.message });
-      }
-    } finally {
-      setInviting(false);
-    }
+      if (err instanceof ApiError) setErrors(err.fields ?? { _form: err.message });
+      else toast.error('Could not create invite.');
+    } finally { setInviting(false); }
   }
 
-  async function removeMember(memberId, memberName) {
+  async function revoke(inv) {
     try {
-      await apiFetch(`/firms/${firmId}/members/${memberId}`, { method: 'DELETE' });
-      setMembers(prev => prev.filter(m => m._id !== memberId));
-      toast.success(`${memberName} removed.`);
-    } catch (err) {
-      toast.error(err instanceof ApiError ? err.message : 'Could not remove member.');
-    }
+      await apiFetch(`/firms/${firmId}/invites/${inv._id}`, { method: 'DELETE' });
+      setInvites((prev) => prev.map((i) => i._id === inv._id ? { ...i, status: 'revoked' } : i));
+    } catch (err) { toast.error('Could not revoke invite.'); }
   }
 
-  if (!firmId) return (
-    <div className="screen">
-      <div className="app-grid">
-        <TopBar />
-        <p className="lead">You are not part of a firm workspace.</p>
+  async function removeMember(m) {
+    if (!confirm(`Remove ${m.name} from the firm?`)) return;
+    try {
+      await apiFetch(`/firms/${firmId}/members/${m._id}`, { method: 'DELETE' });
+      setMembers((prev) => prev.filter((x) => x._id !== m._id));
+      toast.success(`${m.name} removed.`);
+    } catch (err) { toast.error('Could not remove member.'); }
+  }
+
+  if (!firmId) {
+    return (
+      <div className="screen">
+        <div className="app-grid">
+          <TopBar />
+          <p className="lead">You are not part of a firm.</p>
+        </div>
       </div>
-    </div>
-  );
+    );
+  }
+
+  const pendingInvites = invites.filter((i) => i.status === 'pending');
+  const seatsUsed = members.length + pendingInvites.length;
 
   return (
     <div className="screen">
@@ -77,93 +87,81 @@ export default function TeamSettings() {
         <div>
           <p className="eyebrow">Team</p>
           <h2>{firm?.name ?? 'Team settings'}</h2>
-          <p className="lead">Manage your firm's members and seats.</p>
+          <p className="lead">
+            {seatsUsed} of {firm?.seatLimit ?? '?'} seats used ({members.length} members, {pendingInvites.length} pending invites).
+          </p>
         </div>
 
-        {firm && (
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <span className="chip soft-accent">{firm.memberCount} of {firm.seatLimit} seats used</span>
-            <span className="chip">{firm.name}</span>
-          </div>
-        )}
-
         <div className="two-col">
-          {/* Members list */}
+          {/* Members */}
           <div className="panel">
             <div className="panel-head">
               <div>
                 <h3 className="panel-title">Members</h3>
-                <p className="panel-sub">{members.length} member{members.length !== 1 ? 's' : ''}</p>
+                <p className="panel-sub">Everyone with access to this firm.</p>
               </div>
             </div>
             <div className="row-list">
-              {loading && <p className="panel-sub" style={{ padding: '0 4px' }}>Loading…</p>}
-              {members.map(m => (
+              {members.map((m) => (
                 <div className="data-row" key={m._id}>
                   <div>
                     <div className="row-title">{m.name}</div>
-                    <div className="row-sub">{m.email}</div>
+                    <div className="row-sub">{m.email} · {m.role}</div>
                   </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <span className={`chip ${m.role === 'firm_admin' ? 'accent' : ''}`}>
-                      {m.role === 'firm_admin' ? 'Admin' : 'Analyst'}
-                    </span>
-                    {m._id !== user?.id && (
-                      <button
-                        onClick={() => removeMember(m._id, m.name)}
-                        style={{
-                          background: 'none', border: 'none', cursor: 'pointer',
-                          color: 'var(--red)', fontSize: 12, fontWeight: 800, padding: 0,
-                        }}
-                      >
-                        Remove
-                      </button>
-                    )}
-                  </div>
+                  {m._id !== user.id && (
+                    <button className="chip red" style={{ border: 'none', cursor: 'pointer' }} onClick={() => removeMember(m)}>
+                      Remove
+                    </button>
+                  )}
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Invite form */}
-          <div className="panel dark">
+          {/* Invites */}
+          <div className="panel">
             <div className="panel-head">
               <div>
-                <h3 className="panel-title">Add member</h3>
-                <p className="panel-sub">Create a login for a new analyst in your firm.</p>
+                <h3 className="panel-title">Invite a member</h3>
+                <p className="panel-sub">We generate a code. Share it; the invitee registers with it.</p>
               </div>
             </div>
-            <form onSubmit={handleInvite} style={{ padding: '24px 36px 36px', display: 'grid', gap: 14 }}>
-              <div className="login-field" style={{ background: 'var(--dark-soft)', borderColor: 'transparent' }}>
-                <div className="field-label" style={{ color: '#c6d1ca' }}>Full name</div>
-                <input className="field-input" style={{ color: 'white' }} type="text" value={name} onChange={e => setName(e.target.value)} placeholder="Klaus Müller" required />
-                {fieldErrors.name && <div className="field-error">{fieldErrors.name}</div>}
+            <form onSubmit={handleInvite} style={{ padding: '0 40px 32px' }}>
+              <div className="login-field">
+                <div className="field-label">Full name</div>
+                <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} required />
+                {errors.name && <div className="field-error">{errors.name}</div>}
               </div>
-              <div className="login-field" style={{ background: 'var(--dark-soft)', borderColor: 'transparent' }}>
-                <div className="field-label" style={{ color: '#c6d1ca' }}>Work email</div>
-                <input className="field-input" style={{ color: 'white' }} type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="analyst@firm.com" required />
-                {fieldErrors.email && <div className="field-error">{fieldErrors.email}</div>}
+              <div className="login-field">
+                <div className="field-label">Email</div>
+                <input className="field-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                {errors.email && <div className="field-error">{errors.email}</div>}
               </div>
-              <div className="login-field" style={{ background: 'var(--dark-soft)', borderColor: 'transparent' }}>
-                <div className="field-label" style={{ color: '#c6d1ca' }}>Temporary password</div>
-                <input className="field-input" style={{ color: 'white' }} type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Min. 8 characters" required />
+              {errors._form && <p style={{ color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{errors._form}</p>}
+              <div className="actions">
+                <button className="button accent" type="submit" disabled={inviting || seatsUsed >= (firm?.seatLimit ?? 0)}>
+                  {inviting ? 'Creating…' : 'Create invite code'}
+                </button>
               </div>
-              <div className="login-field" style={{ background: 'var(--dark-soft)', borderColor: 'transparent' }}>
-                <div className="field-label" style={{ color: '#c6d1ca' }}>Role</div>
-                <select
-                  value={role}
-                  onChange={e => setRole(e.target.value)}
-                  style={{ background: 'transparent', border: 'none', color: 'white', fontSize: 15, fontWeight: 750, fontFamily: 'inherit', marginTop: 6, outline: 'none', width: '100%' }}
-                >
-                  <option value="firm_analyst" style={{ color: 'var(--ink)' }}>Analyst</option>
-                  <option value="firm_admin" style={{ color: 'var(--ink)' }}>Admin</option>
-                </select>
-              </div>
-              {fieldErrors._form && <p style={{ color: 'var(--red)', fontSize: 13, fontWeight: 700, margin: 0 }}>{fieldErrors._form}</p>}
-              <button className="button accent" type="submit" disabled={inviting}>
-                {inviting ? 'Adding…' : 'Add member'}
-              </button>
             </form>
+
+            {invites.length > 0 && (
+              <div className="row-list">
+                {invites.map((inv) => (
+                  <div className="data-row" key={inv._id}>
+                    <div>
+                      <div className="row-title" style={{ fontFamily: 'monospace' }}>{inv.code}</div>
+                      <div className="row-sub">{inv.name} · {inv.email} · {inv.status}</div>
+                    </div>
+                    {inv.status === 'pending' && (
+                      <button className="chip" style={{ border: 'none', cursor: 'pointer' }} onClick={() => revoke(inv)}>
+                        Revoke
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>
