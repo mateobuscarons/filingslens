@@ -40,8 +40,9 @@ export default function AuthGate() {
       await login(data.token, data.user);
       navigate('/', { replace: true }); // Root routes based on subscription state
     } catch (err) {
-      if (err instanceof ApiError) setErrors({ _form: err.message });
-      else setErrors({ _form: 'Something went wrong. Try again.' });
+      // Don't use `instanceof ApiError` — Vite HMR can produce two class
+      // identities. Duck-type instead.
+      setErrors({ _form: err?.message || 'Something went wrong. Try again.' });
     } finally { setLoading(false); }
   }
 
@@ -59,8 +60,8 @@ export default function AuthGate() {
       await login(data.token, data.user);
       navigate('/', { replace: true }); // Root routes to /billing/setup for fresh users, /dashboard for team-join
     } catch (err) {
-      if (err instanceof ApiError) setErrors({ ...(err.fields ?? {}), _form: err.message });
-      else setErrors({ _form: 'Something went wrong. Try again.' });
+      // Duck-type instead of `instanceof ApiError` — survives HMR reloads.
+      setErrors({ ...(err?.fields ?? {}), _form: err?.message || 'Something went wrong. Try again.' });
     } finally { setLoading(false); }
   }
 
