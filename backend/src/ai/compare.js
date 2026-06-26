@@ -1,19 +1,25 @@
-import { diffWordsWithSpace } from 'diff';
 import { chat } from './llm.js';
 import { normalize, dot } from './vec.js';
 
-// ---- Tunable constants -----------------------------------------------------
+// ─── Tunables ─────────────────────────────────────────────────────────────
+//
+// Pipeline outline:
+//   1. Filter paragraphs that are too short / table-fragment.
+//   2. Cosine-match each current paragraph to its best previous; classify
+//      as unchanged / modified by similarity thresholds.
+//   3. Rank "modified" pairs by materiality (heuristic) and take top 15.
+//   4. For each top candidate: pull a few "RAG" context passages from each
+//      filing (most semantically similar to the candidate), then ask the
+//      LLM to either describe the change OR refuse with `not_a_change`.
+//      Citations come from the passages the LLM picked.
 
-const SIMILAR_THRESHOLD = 0.95;   // paragraphs above this are "unchanged"
-const MATCH_THRESHOLD   = 0.70;   // below MATCH = added; in [MATCH..SIMILAR) = modified
+const SIMILAR_THRESHOLD = 0.95;   // above this = paragraph unchanged
+const MATCH_THRESHOLD   = 0.65;   // between MATCH and SIMILAR = candidate modified pair
+const MIN_PARAGRAPH_LENGTH = 60;
 
-const MIN_PARAGRAPH_LENGTH = 60;  // filter out page numbers, table fragments, etc.
-const JACCARD_DUPLICATE   = 0.80; // findings sharing >=80% tokens are duplicates
-
-const TOP_MODIFIED = 10;
-const TOP_ADDED    = 3;
-const TOP_REMOVED  = 2;
-const SUMMARY_CONCURRENCY = 6;
+const TOP_CANDIDATES   = 15;
+const RAG_CONTEXT_K    = 3;       // context passages per filing per candidate
+const JUDGE_CONCURRENCY = 6;
 
 const KEYWORDS = [
   'risiko', 'risk', 'wesentlich', 'material', 'rückgang', 'decline',
@@ -27,7 +33,7 @@ const SECTION_MARKERS = [
   'vergütung', 'segment', 'ebit', 'cash flow', 'kapital',
 ];
 
-// ---- Paragraph filtering & cosine matching --------------------------------
+// ─── Paragraph filtering + cosine ─────────────────────────────────────────
 
 export function isUsefulParagraph(p) {
   if (!p?.text || p.text.length < MIN_PARAGRAPH_LENGTH) return false;
@@ -47,14 +53,20 @@ export function findBestMatch(queryVec, index) {
   return { index: bestIdx, similarity: best };
 }
 
-export function diffParagraphs(prevText, currText) {
-  return diffWordsWithSpace(prevText, currText).map((p) => ({
-    op: p.added ? 'add' : p.removed ? 'rem' : 'eq',
-    text: p.value,
-  }));
+// Returns the top-K paragraphs in `index` by cosine to queryVec, skipping
+// any paragraph whose _id appears in excludeIds.
+export function findTopK(queryVec, index, k, excludeIds = []) {
+  const exclude = new Set(excludeIds.map((x) => String(x)));
+  const scored = [];
+  for (let i = 0; i < index.vectors.length; i++) {
+    if (exclude.has(String(index.paragraphs[i]._id))) continue;
+    scored.push({ i, score: dot(queryVec, index.vectors[i]) });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, k).map((s) => ({ ...index.paragraphs[s.i], score: s.score }));
 }
 
-// ---- Materiality scoring ---------------------------------------------------
+// ─── Materiality scoring (heuristic candidate ranker only) ────────────────
 
 function extractNumbers(text) {
   const matches = [...text.matchAll(/(?<![\w.])\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?(?!\w)/g)];
@@ -102,98 +114,74 @@ export function scoreModified(prev, curr) {
   );
 }
 
-export function scoreAddedOrRemoved(p) {
-  return clamp01(
-    0.55 * keywordSignal(p.text) +
-    0.25 * sectionWeight(p.text, p.section) +
-    0.20 * lengthBonus(p.text)
-  );
-}
-
 export function impactBucket(score) {
   if (score >= 0.6) return 'high';
   if (score >= 0.3) return 'medium';
   return 'low';
 }
 
-// ---- Dedup (greedy by Jaccard token overlap) ------------------------------
+// ─── LLM judge ────────────────────────────────────────────────────────────
+//
+// One call per candidate. The LLM sees the candidate pair PLUS 3 supporting
+// passages from each filing (most semantically similar to the candidate).
+// It returns JSON: either {verdict:"change", summary, cites_prev, cites_curr}
+// or {verdict:"not_a_change"}.
 
-function tokenize(text) {
-  return new Set((text.toLowerCase().match(/[\wäöüß]+/g) || []).filter((t) => t.length >= 3));
-}
-
-function jaccard(a, b) {
-  if (!a.size || !b.size) return 0;
-  let inter = 0;
-  for (const t of a) if (b.has(t)) inter++;
-  return inter / (a.size + b.size - inter);
-}
-
-// Greedy dedup. `findings` must already be sorted by descending materiality.
-export function dedupFindings(findings) {
-  const kept = [];
-  for (const f of findings) {
-    const tokens = tokenize(f.excerpt);
-    let dupe = false;
-    for (const k of kept) {
-      if (jaccard(tokens, k._tokens) >= JACCARD_DUPLICATE) { dupe = true; break; }
-    }
-    if (!dupe) {
-      f._tokens = tokens;
-      kept.push(f);
-    }
-  }
-  for (const k of kept) delete k._tokens;
-  return kept;
-}
-
-// ---- LLM summaries (one prompt per type, single sentence) -----------------
-
-const COMMON_RULES = [
-  'Reply with EXACTLY one declarative sentence in the language of the excerpt, max 30 words.',
-  'Numbers must appear verbatim in the excerpt. Never invent figures.',
-  'German numbers use "." as thousands separator and "," as decimal point.',
-  'Do not self-correct. Do not write "Note:", "Correction:" or any commentary.',
-];
-
-const SYSTEM_MODIFIED = [
-  'You compare two excerpts from a German annual report. The first is from the PREVIOUS filing, the second from the CURRENT filing.',
-  'Describe the change between them. If a metric appears with old and new values, write "<metric> changed from <old> to <new>".',
-  ...COMMON_RULES,
+const JUDGE_SYSTEM = [
+  'You are a financial-analyst assistant comparing two annual reports of the same company.',
+  'You will see numbered PREV passages (from the previous filing) and CURR passages (from the current filing).',
+  'Passage [1] on each side is the strongest candidate; passages [2..] are supporting context retrieved by semantic similarity.',
+  'Decide whether the passages together describe a real, meaningful change of the SAME metric or topic.',
+  '',
+  'Reply with ONE LINE of strict JSON only. No prose, no markdown fences.',
+  '',
+  'If it IS a real change:',
+  '  {"verdict":"change","summary":"<one declarative sentence in the source language, max 30 words>","cites_prev":[<one or more 1-based numbers from PREV passages>],"cites_curr":[<one or more 1-based numbers from CURR passages>]}',
+  '',
+  'If it is NOT a real change (mismatched table fragments, different metrics, no clear comparison, or no supporting evidence on both sides):',
+  '  {"verdict":"not_a_change"}',
+  '',
+  'Rules:',
+  '- Numbers must appear VERBATIM in the cited passages. German numbers use "." as thousands separator and "," as decimal.',
+  '- The summary must be ONE declarative sentence — no commentary, no self-correction, no "Note:" prefixes.',
+  '- cites_prev MUST include the passages that contain the OLD value. cites_curr MUST include the passages that contain the NEW value.',
+  '- You MUST cite at least one passage from EACH side. If the numbers/metric in your summary do not appear in the cited passages, reply not_a_change.',
 ].join('\n');
 
-const SYSTEM_ADDED = [
-  'You read one excerpt newly present in the CURRENT filing of a German annual report — it was not in the previous filing.',
-  'Describe what is new in plain prose.',
-  ...COMMON_RULES,
-].join('\n');
+export async function judgeCandidate({ prevParagraph, currParagraph, prevFilingYear, currFilingYear }, prevContext, currContext) {
+  // The candidate paragraphs become passage [1] on each side. Context follows
+  // as [2..]. The LLM then cites by passage number; we resolve those back to
+  // paragraph rows for Citation persistence.
+  const prevList = [prevParagraph, ...prevContext];
+  const currList = [currParagraph, ...currContext];
+  const user = [
+    `PREV passages (FY${prevFilingYear}):`,
+    ...prevList.map((p, i) => `[${i + 1}] page ${p.page}: ${p.text}`),
+    '',
+    `CURR passages (FY${currFilingYear}):`,
+    ...currList.map((p, i) => `[${i + 1}] page ${p.page}: ${p.text}`),
+  ].join('\n');
 
-const SYSTEM_REMOVED = [
-  'You read one excerpt from a PREVIOUS filing that no longer appears in the current filing.',
-  'Describe what was removed in plain prose.',
-  ...COMMON_RULES,
-].join('\n');
-
-export async function summarizeFinding(finding) {
-  let system, user;
-  if (finding.type === 'modified') {
-    system = SYSTEM_MODIFIED;
-    user = `PREVIOUS:\n${finding._prevText}\n\nCURRENT:\n${finding._currText}`;
-  } else if (finding.type === 'added') {
-    system = SYSTEM_ADDED;
-    user = finding.excerpt;
-  } else {
-    system = SYSTEM_REMOVED;
-    user = finding.excerpt;
-  }
-  return chat(
+  const raw = await chat(
     'summary',
-    [{ role: 'system', content: system }, { role: 'user', content: user }],
-    { temperature: 0.1, maxTokens: 120, timeoutMs: 45000 }
+    [{ role: 'system', content: JUDGE_SYSTEM }, { role: 'user', content: user }],
+    { temperature: 0.1, maxTokens: 250, timeoutMs: 60000 }
   );
+
+  // Tolerate stray prose around the JSON. Take the first {...} block.
+  const match = raw.match(/\{[\s\S]*\}/);
+  let parsed;
+  if (match) {
+    try { parsed = JSON.parse(match[0]); } catch { /* fall through */ }
+  }
+  if (!parsed) return { verdict: 'not_a_change', _raw: raw };
+  // Attach the resolved lists so the worker can map cites_* indices.
+  parsed._prevList = prevList;
+  parsed._currList = currList;
+  return parsed;
 }
 
-// ---- Runtime helpers -------------------------------------------------------
+// ─── Runtime helpers ──────────────────────────────────────────────────────
 
 export async function runPool(items, concurrency, worker) {
   const queue = items.slice();
@@ -206,8 +194,7 @@ export async function runPool(items, concurrency, worker) {
 export const COMPARE_CONSTANTS = {
   SIMILAR_THRESHOLD,
   MATCH_THRESHOLD,
-  TOP_MODIFIED,
-  TOP_ADDED,
-  TOP_REMOVED,
-  SUMMARY_CONCURRENCY,
+  TOP_CANDIDATES,
+  RAG_CONTEXT_K,
+  JUDGE_CONCURRENCY,
 };

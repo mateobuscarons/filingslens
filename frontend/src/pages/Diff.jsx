@@ -4,13 +4,13 @@ import { apiFetch, ApiError } from '../api.js';
 import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
 
-// Diff page renders the previous and current excerpts as continuous text,
-// with red strikethrough for removed words and green highlight for added.
-// Each pane is a single flowing block — not a stack of cards.
+// The new Diff page. The pipeline now decides what's a real change via the
+// LLM and attaches the passages the LLM grounded its answer in. We just
+// render those passages as two side-by-side panels, one per filing year,
+// with the LLM's one-sentence summary as the headline.
 export default function Diff() {
   const { id: comparisonId, findingId } = useParams();
   const toast = useToast();
-
   const [data, setData] = useState(null);
   const [saving, setSaving] = useState(false);
 
@@ -44,7 +44,10 @@ export default function Diff() {
   }
 
   if (!data) return null;
-  const { diff = [], currentParagraph, previousParagraph, citations = [] } = data;
+  const citations = data.citations ?? [];
+  const byYear = {};
+  for (const c of citations) (byYear[c.filingYear] ||= []).push(c);
+  const years = Object.keys(byYear).map(Number).sort((a, b) => a - b); // older first
 
   return (
     <div className="screen">
@@ -52,75 +55,39 @@ export default function Diff() {
         <TopBar />
 
         <div>
-          <p className="eyebrow">Change detail</p>
-          <h2>Filing diff.</h2>
-          <p className="lead">
-            See exactly which text changed between the two filings, with
-            source page references on the right.
-          </p>
+          <p className="eyebrow">Change detail · {data.impact}</p>
+          <h2>{data.summary || 'Change'}</h2>
+          <p className="lead">{data.section}</p>
         </div>
 
-        <div className="diff-grid">
-          <div className="diff-pane">
-            <div className="diff-head">
-              <div>
-                <div className="row-title">Previous filing</div>
-                <div className="row-sub">{data.section} · p. {previousParagraph?.page ?? '—'}</div>
-              </div>
-              <span className="chip">Previous</span>
-            </div>
-            <p className="diff-flow">
-              <InlineDiff diff={diff} side="previous" />
-            </p>
-          </div>
+        <div className="actions" style={{ marginTop: 0 }}>
+          <button className="button accent" onClick={saveToReport} disabled={saving}>
+            {saving ? 'Saving…' : 'Save to report'}
+          </button>
+          <Link className="button ghost" to={`/analyses/${comparisonId}`}>← Back to results</Link>
+        </div>
 
-          <div className="diff-pane">
-            <div className="diff-head">
-              <div>
-                <div className="row-title">Current filing</div>
-                <div className="row-sub">{data.section} · p. {currentParagraph?.page ?? '—'}</div>
+        <div className="two-col">
+          {years.map((year) => (
+            <div key={year} className="panel">
+              <div className="panel-head">
+                <div>
+                  <h3 className="panel-title">FY{year} filing</h3>
+                  <p className="panel-sub">{byYear[year].length} cited passage{byYear[year].length === 1 ? '' : 's'}</p>
+                </div>
               </div>
-              <span className="chip soft-accent">Current</span>
+              <div style={{ padding: '0 40px 32px', display: 'grid', gap: 14 }}>
+                {byYear[year].map((c, i) => (
+                  <div key={i} style={{ padding: 18, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 16 }}>
+                    <div className="row-sub" style={{ marginBottom: 8 }}>Page {c.page}</div>
+                    <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{c.excerpt}</p>
+                  </div>
+                ))}
+              </div>
             </div>
-            <p className="diff-flow">
-              <InlineDiff diff={diff} side="current" />
-            </p>
-          </div>
-
-          <div className="diff-side">
-            <h3 className="panel-title">Why this ranks {data.impact}</h3>
-            <p className="panel-sub">{data.summary || data.excerpt || '—'}</p>
-            <p className="panel-sub" style={{ marginTop: 12 }}>
-              Impact score: {data.materialityScore?.toFixed(2)} · {data.type}
-            </p>
-            <div className="diff-actions">
-              {citations.map((c, i) => (
-                <span key={i} className="chip accent">FY{c.filingYear} · p. {c.page}</span>
-              ))}
-              <button className="button accent" onClick={saveToReport} disabled={saving}>
-                {saving ? 'Saving…' : 'Save to report'}
-              </button>
-              <Link className="button ghost" to={`/analyses/${comparisonId}`}>← Back to results</Link>
-            </div>
-          </div>
+          ))}
         </div>
       </div>
     </div>
   );
-}
-
-// Render the appropriate side. For "previous", show equal + removed. For
-// "current", show equal + added. Each segment is a span so the text flows
-// naturally; removed/added get color-coded inline.
-function InlineDiff({ diff, side }) {
-  return diff.map((seg, i) => {
-    if (seg.op === 'eq') return <span key={i}>{seg.text}</span>;
-    if (seg.op === 'rem' && side === 'previous') {
-      return <span key={i} className="diff-rem">{seg.text}</span>;
-    }
-    if (seg.op === 'add' && side === 'current') {
-      return <span key={i} className="diff-add">{seg.text}</span>;
-    }
-    return null;
-  });
 }
