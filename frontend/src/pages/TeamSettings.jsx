@@ -106,7 +106,7 @@ export default function TeamSettings() {
                 <div className="data-row" key={m._id}>
                   <div>
                     <div className="row-title">{m.name}</div>
-                    <div className="row-sub">{m.email} · {m.role}</div>
+                    <div className="row-sub">{m.email} · {m.role === 'firm_admin' ? 'Admin' : 'Analyst'}</div>
                   </div>
                   {m._id !== user.id && (
                     <button className="chip red" style={{ border: 'none', cursor: 'pointer' }} onClick={() => removeMember(m)}>
