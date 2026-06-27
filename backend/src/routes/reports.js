@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
+import { sendReportShared } from '../email.js';
 import { validate } from '../middleware/validate.js';
 import { ResearchReport, ReportItem } from '../models/report.js';
 import { Finding } from '../models/finding.js';
@@ -191,6 +192,17 @@ async function setShared(req, res, isShared) {
   }
   report.isShared = isShared;
   await report.save();
+
+  if (isShared && req.user.firmId) {
+    User.find({ firmId: req.user.firmId, _id: { $ne: req.user._id } })
+      .select('name email')
+      .then(members => sendReportShared({
+        reportTitle: report.title,
+        sharedByName: req.user.name,
+        firmMembers: members,
+      }));
+  }
+
   res.json(report);
 }
 

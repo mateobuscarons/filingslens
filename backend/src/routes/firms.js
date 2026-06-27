@@ -6,6 +6,7 @@ import { validate } from '../middleware/validate.js';
 import { InvestmentFirm } from '../models/firm.js';
 import { User } from '../models/user.js';
 import { TeamInvite } from '../models/teamInvite.js';
+import { sendInvite } from '../email.js';
 
 const router = Router();
 
@@ -113,6 +114,9 @@ router.post('/:id/invites', requireAuth, requireFirmAdmin, validate(inviteSchema
       email: req.body.email,
       code,
     });
+
+    sendInvite({ toName: invite.name, toEmail: invite.email, firmName: firm.name, code });
+
     res.status(201).json(invite);
   } catch (err) {
     next(err);

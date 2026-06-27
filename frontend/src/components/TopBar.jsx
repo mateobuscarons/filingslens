@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import ProductNav from './ProductNav.jsx';
 import { useAuth } from '../auth.jsx';
+import { apiFetch } from '../api.js';
 
 function getInitials(name) {
   if (!name) return '?';
@@ -14,17 +15,27 @@ export default function TopBar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const ref = useRef(null);
 
   useEffect(() => {
     function handleClick(e) {
-      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target)) {
+        setOpen(false);
+        setConfirmDelete(false);
+      }
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
 
   function handleLogout() {
+    logout();
+    navigate('/', { replace: true });
+  }
+
+  async function handleDeleteAccount() {
+    await apiFetch('/me', { method: 'DELETE' });
     logout();
     navigate('/', { replace: true });
   }
@@ -100,6 +111,45 @@ export default function TopBar() {
                 >
                   Sign out
                 </button>
+                <div style={{ borderTop: '1px solid var(--line)', margin: '4px 0' }} />
+                {!confirmDelete ? (
+                  <button
+                    onClick={() => setConfirmDelete(true)}
+                    style={{
+                      display: 'block', width: '100%', textAlign: 'left',
+                      padding: '9px 18px', fontSize: 12, fontWeight: 750,
+                      color: 'var(--muted)', background: 'none', border: 'none', cursor: 'pointer',
+                    }}
+                  >
+                    Delete account
+                  </button>
+                ) : (
+                  <div style={{ padding: '8px 18px' }}>
+                    <div style={{ fontSize: 12, color: 'var(--ink)', marginBottom: 8 }}>This is permanent. Sure?</div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        onClick={handleDeleteAccount}
+                        style={{
+                          flex: 1, padding: '6px 0', fontSize: 12, fontWeight: 750,
+                          color: 'white', background: 'var(--red)', border: 'none',
+                          borderRadius: 8, cursor: 'pointer',
+                        }}
+                      >
+                        Yes, delete
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(false)}
+                        style={{
+                          flex: 1, padding: '6px 0', fontSize: 12, fontWeight: 750,
+                          color: 'var(--ink)', background: 'var(--surface)', border: '1px solid var(--line)',
+                          borderRadius: 8, cursor: 'pointer',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}

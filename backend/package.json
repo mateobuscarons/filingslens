@@ -18,8 +18,10 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.5.1",
     "multer": "^1.4.5-lts.1",
+    "nodemailer": "^9.0.1",
     "openai": "^4.56.0",
     "pdfjs-dist": "^4.4.168",
+    "resend": "^6.16.0",
     "zod": "^3.23.8"
   }
 }

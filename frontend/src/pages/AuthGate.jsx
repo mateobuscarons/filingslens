@@ -28,6 +28,7 @@ export default function AuthGate() {
 
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
+  const [pendingEmail, setPendingEmail] = useState(null);
 
   async function handleSignIn(e) {
     e.preventDefault();
@@ -40,8 +41,10 @@ export default function AuthGate() {
       await login(data.token, data.user);
       navigate('/', { replace: true }); // Root routes based on subscription state
     } catch (err) {
-      // Don't use `instanceof ApiError` — Vite HMR can produce two class
-      // identities. Duck-type instead.
+      if (err?.code === 'EMAIL_NOT_VERIFIED') {
+        setPendingEmail(email);
+        return;
+      }
       setErrors({ _form: err?.message || 'Something went wrong. Try again.' });
     } finally { setLoading(false); }
   }
@@ -57,12 +60,46 @@ export default function AuthGate() {
         method: 'POST',
         body: JSON.stringify(body),
       });
+      if (data.pending) {
+        setPendingEmail(email);
+        return;
+      }
       await login(data.token, data.user);
-      navigate('/', { replace: true }); // Root routes to /billing/setup for fresh users, /dashboard for team-join
+      navigate('/', { replace: true });
     } catch (err) {
       // Duck-type instead of `instanceof ApiError` — survives HMR reloads.
       setErrors({ ...(err?.fields ?? {}), _form: err?.message || 'Something went wrong. Try again.' });
     } finally { setLoading(false); }
+  }
+
+  if (pendingEmail) {
+    return (
+      <section className="screen">
+        <div className="login-grid">
+          <div>
+            <p className="eyebrow">Almost there</p>
+            <h2>Check your inbox.</h2>
+            <p className="lead">We sent a verification link to confirm your email before you can sign in.</p>
+          </div>
+          <div className="login-card">
+            <div className="brand">FilingLens</div>
+            <p style={{ marginTop: 24, fontSize: 14, color: 'var(--ink)' }}>
+              Verification email sent to <strong>{pendingEmail}</strong>.
+            </p>
+            <p style={{ marginTop: 10, fontSize: 13, color: 'var(--muted)' }}>
+              Click the link in that email to activate your account, then come back here to sign in.
+            </p>
+            <button
+              className="button"
+              style={{ marginTop: 24 }}
+              onClick={() => { setPendingEmail(null); setTab('signin'); }}
+            >
+              Back to sign in
+            </button>
+          </div>
+        </div>
+      </section>
+    );
   }
 
   return (

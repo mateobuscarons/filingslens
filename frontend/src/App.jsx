@@ -12,8 +12,9 @@ import Diff         from './pages/Diff.jsx';
 import QA           from './pages/QA.jsx';
 import ReportsList  from './pages/ReportsList.jsx';
 import Report       from './pages/Report.jsx';
-import TeamSettings from './pages/TeamSettings.jsx';
-import Billing      from './pages/Billing.jsx';
+import TeamSettings  from './pages/TeamSettings.jsx';
+import Billing       from './pages/Billing.jsx';
+import VerifyEmail   from './pages/VerifyEmail.jsx';
 
 // `/` routes to the right place based on auth + subscription state.
 function Root() {
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="/settings/billing" element={<ProtectedRoute><Billing /></ProtectedRoute>} />
             <Route path="/settings/team" element={<AdminRoute><TeamSettings /></AdminRoute>} />
 
+            <Route path="/verify" element={<VerifyEmail />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </ToastProvider>
