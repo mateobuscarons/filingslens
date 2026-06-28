@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 const comparisonSchema = new mongoose.Schema(
   {
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    firmId: { type: mongoose.Schema.Types.ObjectId, ref: 'InvestmentFirm', default: null, index: true },
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     currentFilingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Filing', required: true },
     previousFilingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Filing', required: true },
@@ -19,6 +20,7 @@ const comparisonSchema = new mongoose.Schema(
     },
     overallScore: { type: Number, default: 0 },
     error: { type: String, default: null },
+    isShared: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { apiFetch } from '../api.js';
+import { apiFetch, ApiError } from '../api.js';
+import { useAuth } from '../auth.jsx';
+import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
 
 const STEPS = [
@@ -20,8 +22,26 @@ function impactChipClass(impact) {
 
 export default function Analysis() {
   const { id } = useParams();
+  const { user } = useAuth();
+  const toast = useToast();
   const [comparison, setComparison] = useState(null);
   const [findings, setFindings] = useState([]);
+  const [sharing, setSharing] = useState(false);
+
+  async function toggleShare() {
+    if (!comparison) return;
+    setSharing(true);
+    try {
+      const method = comparison.isShared ? 'DELETE' : 'POST';
+      const updated = await apiFetch(`/comparisons/${id}/share`, { method });
+      setComparison((prev) => ({ ...prev, isShared: updated.isShared }));
+      toast.success(updated.isShared ? 'Shared with firm.' : 'Unshared.');
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not update sharing.');
+    } finally {
+      setSharing(false);
+    }
+  }
 
   // Poll comparison every 3s until completed/failed.
   useEffect(() => {
@@ -51,6 +71,9 @@ export default function Analysis() {
   const company = comparison.companyId?.name ?? 'Unknown';
   const currYear = comparison.currentFilingId?.fiscalYear ?? '—';
   const prevYear = comparison.previousFilingId?.fiscalYear ?? '—';
+  const owner = typeof comparison.userId === 'object' ? comparison.userId : null;
+  const isOwner = owner?._id === user?.id;
+  const canShare = isOwner && Boolean(user?.firmId);
 
   if (comparison.status === 'failed') {
     return (
@@ -117,6 +140,14 @@ export default function Analysis() {
       <div className="actions" style={{ marginTop: 0 }}>
         <Link className="button accent" to={`/analyses/${id}/qa`}>Ask follow-up questions</Link>
         <Link className="button ghost" to="/reports">View reports</Link>
+        {canShare && (
+          <button className="button ghost" onClick={toggleShare} disabled={sharing}>
+            {sharing ? '…' : comparison.isShared ? 'Unshare' : 'Share with firm'}
+          </button>
+        )}
+        {!isOwner && owner?.name && (
+          <span className="chip soft-accent" style={{ alignSelf: 'center' }}>Shared by {owner.name}</span>
+        )}
       </div>
 
       {topics.map(([topic, list]) => (

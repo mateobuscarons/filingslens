@@ -35,7 +35,7 @@ invites + seat-based billing.
 | Validation | Zod (per-route schemas, wrapped by `validate()` middleware) |
 | AI — chat | Groq via OpenAI SDK pointed at `https://api.groq.com/openai/v1` |
 | LLM — judge (compare) | `openai/gpt-oss-120b` — strict JSON Schema with constrained decoding |
-| LLM — Q&A answerer | `qwen/qwen3-32b` — JSON object mode, strong German |
+| LLM — Q&A answerer | `openai/gpt-oss-20b` — strict JSON Schema, reasoning model (TPM 8K, TPD 200K — sustainable headroom) |
 | LLM — utility | `llama-3.1-8b-instant` — fast/cheap, used for any incidental call |
 | AI — embeddings | NVIDIA NIM `nvidia/nv-embedqa-e5-v5` (1024-dim, asymmetric passage/query) |
 | PDF parsing | `pdfjs-dist/legacy/build/pdf.mjs` |
@@ -165,6 +165,9 @@ The single biggest collection by row count.
 One row per analysis. `status` lifecycle:
 `pending → comparing → summarizing → completed | failed`. `progress`
 (0–1), `counts.{modified, added, removed}`, `overallScore`, `error`.
+**Sharing**: `isShared: Boolean` + `firmId` (denormalized at create time).
+When `isShared` is true, every member of `firmId` can read the comparison +
+its findings/citations.
 
 ### 5.11 `Finding` — `models/finding.js`
 The judge's output. One row per surfaced change. Fields:
@@ -206,7 +209,11 @@ visibility. Optionally linked to the `comparisonId` it was generated from.
 
 ### 5.16 `ReportItem` — `models/report.js`
 One saved finding or Q&A answer inside a report. `kind: 'finding' |
-'answer'` + `refId`, with optional `note`.
+'answer'` + `refId`. Attribution: `addedBy`, `addedByName`. **Notes** are a
+sub-document array — `notes: [{ authorId, authorName, text, createdAt }]`.
+On a shared report, any firm member can append a note; only the note's
+author can delete their own. Together with `addedBy`, this is the team
+collaboration primitive: who put it in the report, who annotated it.
 
 ---
 
@@ -284,6 +291,7 @@ One saved finding or Q&A answer inside a report. `kind: 'finding' |
 | DELETE | `/comparisons/:id` | 🔐 | Cascade: findings + citations |
 | GET | `/comparisons/:id/findings?limit=N` | 🔐 | Sorted by materiality desc |
 | GET | `/findings/:id` | 🔐 | One finding + both Paragraphs + Citations |
+| POST/DELETE | `/comparisons/:id/share` | 🔐 (owner) | Toggle firm sharing (mirrors reports) |
 
 ### Q&A
 | Method | Path | Auth | Purpose |
@@ -303,9 +311,11 @@ One saved finding or Q&A answer inside a report. `kind: 'finding' |
 | PATCH | `/reports/:id` | 🔐 (owner) | Title / share toggle |
 | DELETE | `/reports/:id` | 🔐 (owner) | Cascade |
 | POST/DELETE | `/reports/:id/share` | 🔐 (owner) | Share with firm |
-| POST | `/reports/:id/items` | 🔐 (owner) | Save a finding or answer |
-| PATCH | `/reports/:id/items/:itemId` | 🔐 (owner) | Edit note / soft-archive |
-| DELETE | `/reports/:id/items/:itemId` | 🔐 (owner) | Hard-delete |
+| POST | `/reports/:id/items` | 🔐 (owner or firm-mate on shared) | Save a finding or answer |
+| PATCH | `/reports/:id/items/:itemId` | 🔐 (owner or firm-mate on shared) | Soft-archive |
+| DELETE | `/reports/:id/items/:itemId` | 🔐 (owner or firm-mate on shared) | Hard-delete |
+| POST | `/reports/:id/items/:itemId/notes` | 🔐 (owner or firm-mate on shared) | Append a note to the thread |
+| DELETE | `/reports/:id/items/:itemId/notes/:noteId` | 🔐 (note author) | Delete your own note |
 
 ---
 
@@ -343,15 +353,27 @@ $ref, $defs, anyOf, enum, const, format).
 asymmetrically). Batches of 16 per request. Returns 1024-dim vectors.
 
 ### 8.4 PDF parsing — `ai/pdf.js`
-Two passes:
+Three passes:
 1. `extractPages` — pdfjs reads each page, items are bucketed by
    Y-coordinate to reconstruct lines, then sorted by X.
 2. `paginateToParagraphs` — iterate lines; detect headings (numbered,
    ALL-CAPS, or `Note N`) → set `currentSection`; otherwise accumulate
    into a buffer that flushes at ~400 chars. Drop anything < 150 chars.
+3. `splitIntoChunks` — each flushed paragraph is split at sentence
+   boundaries (`. ! ?` followed by an uppercase letter) into chunks of
+   ~60–250 chars. Tiny fragments are glued to neighbours. Each chunk
+   becomes its own embedded row.
 
-The section detection is intentionally lossy — the new compare pipeline
-no longer relies on it (the LLM provides clean topic labels for findings).
+The sentence-level chunking is what makes Q&A retrieval work on
+multi-topic paragraphs: when a paragraph mixes "stock awards + pensions +
+total board comp", the averaged embedding doesn't surface the comp
+sentence — but as its own ~150-char chunk, the comp sentence has a
+focused embedding and ranks where it should. ~2× more rows in the
+`paragraphs` collection vs. paragraph-level chunking, no other downstream
+changes — `quoteResolver` keeps working on `paragraph.text`.
+
+Section detection stays lossy on purpose — the comparison pipeline doesn't
+use the `section` field (the LLM emits its own topic label per finding).
 
 ### 8.5 Ingest orchestrator — `ai/ingest.js`
 `ingestFiling(filingId, filePath)`:
@@ -406,25 +428,33 @@ Tunables in `ai/compare.js`:
 
 `answerQuestion(companyId, questionText)`:
 1. Find all `Filing`s for the company with `ingestStatus = 'ready'`.
-2. Load all their Paragraphs. Embed the question.
-3. Score every paragraph by cosine. Sort, take top 20.
-4. **Rebalance per filing year.** Ensure each filing year contributes at
-   least min(2, available) passages to the LLM input — avoids the
-   "all from one year" failure on comparative questions. Slice to top 8.
-5. Build a numbered passage list. Send to `qwen3-32b` with JSON object
-   mode:
+2. Load all their Paragraphs (sentence-level chunks). Embed the question.
+3. Score every chunk by cosine. Sort, take top **70**.
+4. Build a numbered passage list. Send to `gpt-oss-20b` with strict JSON
+   Schema:
    ```
    { answer, citations: [{ passage_number, quote }] }
    ```
    Or, if the model decides there isn't enough evidence,
    `{ answer: "INSUFFICIENT_EVIDENCE", citations: [] }`.
-6. **Resolve quotes.** For each citation, run `resolveQuote` against the
+5. **Resolve quotes.** For each citation, run `resolveQuote` against the
    cited passage. Unresolved citations are dropped.
-7. **Strip dead markers.** Any `[N]` in the answer that doesn't have a
+6. **Strip dead markers.** Any `[N]` in the answer that doesn't have a
    resolved citation gets removed from the text, so the UI never renders
    a dead link.
-8. Set `citation.marker = passage_number` directly — the inline `[N]`
+7. Set `citation.marker = passage_number` directly — the inline `[N]`
    markers in the answer always match the citation cards.
+
+No sub-query expansion, no per-filing rebalancing, no keyword boosts —
+the sentence chunking does the heavy lifting. Plain top-K cosine works
+because each chunk has a focused single-topic embedding.
+
+**Known limitations.** Pure vector retrieval is sensitive to vocabulary.
+A question with synonym vocabulary that diverges from the filing's wording
+("Gesamtvergütung" vs the filing's "gewährte Vergütung sowie gewährten
+Leistungen") may not surface the right chunk. The system refuses cleanly
+in that case rather than confabulating. A cross-encoder reranker would
+close this gap if needed.
 
 ### 8.8 Quote resolver — `ai/quoteResolver.js`
 The smart part of the system, but kept simple. Given a quote string and a
@@ -567,7 +597,13 @@ one or two:
 2. **PDF deep-link** — `CitationCard` builds a URL with the JWT as a
    query param so the browser PDF viewer opens the cited page directly.
    No PDF.js, no overlays, just the real file at `#page=N`.
-3. **Three-state route guard** (`auth.jsx`): unauthenticated /
-   authenticated-no-sub / authenticated.
-4. **Client-side PDF export** (`pages/Report.jsx::downloadPdf`):
+3. **Team workspace primitives** — comparisons + reports both share a
+   single firm-visibility pattern: `isShared` flag + denormalized `firmId`.
+   The `canRead`/`canEdit`/`ownedReport` helpers in `routes/reports.js`
+   express the three permission gradients (read / co-edit / owner-only).
+4. **Notes thread on report items** (`pages/Report.jsx::NotesPanel`).
+   Post-it tinted panel under each item, append-only, author + relative
+   timestamp. On shared reports, any firm member contributes; only the
+   note's author can delete their own.
+5. **Client-side PDF export** (`pages/Report.jsx::downloadPdf`):
    walks report items, page-breaks automatically, never hits the backend.

@@ -10,8 +10,13 @@ const router = Router();
 router.get('/:id', requireAuth, async (req, res) => {
   const finding = await Finding.findById(req.params.id);
   if (!finding) return res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found' });
-  const comparison = await FilingComparison.findOne({ _id: finding.comparisonId, userId: req.user._id });
-  if (!comparison) return res.status(403).json({ error: 'FORBIDDEN', message: 'Not your comparison' });
+  const comparison = await FilingComparison.findById(finding.comparisonId);
+  if (!comparison) return res.status(404).json({ error: 'NOT_FOUND', message: 'Finding not found' });
+  // Owner OR firm-mate on a shared comparison.
+  const canRead =
+    comparison.userId.equals(req.user._id) ||
+    (comparison.isShared && req.user.firmId && comparison.firmId?.equals(req.user.firmId));
+  if (!canRead) return res.status(403).json({ error: 'FORBIDDEN', message: 'Not your comparison' });
 
   const [currentParagraph, previousParagraph, citations] = await Promise.all([
     finding.currentParagraphId ? Paragraph.findById(finding.currentParagraphId).select('-embedding') : null,

@@ -6,6 +6,11 @@ import { validate } from '../middleware/validate.js';
 import { InvestmentFirm } from '../models/firm.js';
 import { User } from '../models/user.js';
 import { TeamInvite } from '../models/teamInvite.js';
+import { ResearchReport, ReportItem } from '../models/report.js';
+import { FilingComparison } from '../models/comparison.js';
+import { Finding } from '../models/finding.js';
+import { Citation } from '../models/citation.js';
+import { QASession, Question } from '../models/qa.js';
 
 const router = Router();
 
@@ -50,6 +55,11 @@ router.get('/:id/members', requireAuth, async (req, res, next) => {
   }
 });
 
+// Deletes the user's account AND everything they own:
+// their comparisons + findings + citations, their reports + items (notes
+// are embedded), their QA sessions + questions + citations. Notes they
+// wrote on OTHER members' reports stay (with the now-orphan authorId) —
+// the text was useful, the audit trail more so.
 router.delete('/:id/members/:userId', requireAuth, requireFirmAdmin, async (req, res, next) => {
   try {
     const firm = await loadFirmOr404(req, res);
@@ -59,6 +69,31 @@ router.delete('/:id/members/:userId', requireAuth, requireFirmAdmin, async (req,
     }
     const user = await User.findOne({ _id: req.params.userId, firmId: firm._id });
     if (!user) return res.status(404).json({ error: 'NOT_FOUND', message: 'Member not found' });
+
+    // Reports + items
+    const reports = await ResearchReport.find({ userId: user._id }).select('_id');
+    const reportIds = reports.map((r) => r._id);
+    if (reportIds.length) await ReportItem.deleteMany({ reportId: { $in: reportIds } });
+    await ResearchReport.deleteMany({ userId: user._id });
+
+    // Comparisons + findings + citations
+    const comparisons = await FilingComparison.find({ userId: user._id }).select('_id');
+    const cmpIds = comparisons.map((c) => c._id);
+    const findings = cmpIds.length ? await Finding.find({ comparisonId: { $in: cmpIds } }).select('_id') : [];
+    const findingIds = findings.map((f) => f._id);
+    if (findingIds.length) await Citation.deleteMany({ sourceType: 'Finding', sourceId: { $in: findingIds } });
+    if (cmpIds.length) await Finding.deleteMany({ comparisonId: { $in: cmpIds } });
+    await FilingComparison.deleteMany({ userId: user._id });
+
+    // QA sessions + questions + citations
+    const sessions = await QASession.find({ userId: user._id }).select('_id');
+    const sessionIds = sessions.map((s) => s._id);
+    const questions = sessionIds.length ? await Question.find({ sessionId: { $in: sessionIds } }).select('_id') : [];
+    const questionIds = questions.map((q) => q._id);
+    if (questionIds.length) await Citation.deleteMany({ sourceType: 'Question', sourceId: { $in: questionIds } });
+    if (sessionIds.length) await Question.deleteMany({ sessionId: { $in: sessionIds } });
+    await QASession.deleteMany({ userId: user._id });
+
     await user.deleteOne();
     res.json({ ok: true });
   } catch (err) {

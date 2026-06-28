@@ -9,6 +9,33 @@ import { Citation } from '../models/citation.js';
 
 const router = Router();
 
+// Read = owner OR firm-mate on a shared report.
+function canRead(user, report) {
+  if (report.userId.equals(user._id)) return true;
+  return Boolean(report.isShared && user.firmId && report.firmId?.equals(user.firmId));
+}
+// Edit (items + notes) = owner OR firm-mate on a shared report.
+// Share toggle + report delete stay owner-only — see ownedReport below.
+function canEdit(user, report) {
+  return canRead(user, report);
+}
+
+async function readableReport(req, res) {
+  const report = await ResearchReport.findById(req.params.id);
+  if (!report || !canRead(req.user, report)) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Report not found' });
+    return null;
+  }
+  return report;
+}
+async function editableReport(req, res) {
+  const report = await ResearchReport.findById(req.params.id);
+  if (!report || !canEdit(req.user, report)) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Report not found' });
+    return null;
+  }
+  return report;
+}
 async function ownedReport(req, res) {
   const report = await ResearchReport.findById(req.params.id);
   if (!report) {
@@ -16,15 +43,10 @@ async function ownedReport(req, res) {
     return null;
   }
   if (!report.userId.equals(req.user._id)) {
-    res.status(403).json({ error: 'FORBIDDEN', message: 'Only the owner can edit this report' });
+    res.status(403).json({ error: 'FORBIDDEN', message: 'Only the owner can do that' });
     return null;
   }
   return report;
-}
-
-function canRead(user, report) {
-  if (report.userId.equals(user._id)) return true;
-  return Boolean(report.isShared && user.firmId && report.firmId?.equals(user.firmId));
 }
 
 router.get('/', requireAuth, async (req, res) => {
@@ -129,22 +151,24 @@ router.delete('/:id', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ---- Items -----------------------------------------------------------------
+
 const itemSchema = z.object({
   kind: z.enum(['finding', 'answer']),
   refId: z.string().min(1),
-  note: z.string().max(2000).optional(),
 });
 
 router.post('/:id/items', requireAuth, validate(itemSchema), async (req, res, next) => {
   try {
-    const report = await ownedReport(req, res);
+    const report = await editableReport(req, res);
     if (!report) return;
     const last = await ReportItem.findOne({ reportId: report._id }).sort({ order: -1 });
     const item = await ReportItem.create({
       reportId: report._id,
       kind: req.body.kind,
       refId: req.body.refId,
-      note: req.body.note || '',
+      addedBy: req.user._id,
+      addedByName: req.user.name,
       order: (last?.order ?? -1) + 1,
     });
     res.status(201).json(item);
@@ -154,13 +178,12 @@ router.post('/:id/items', requireAuth, validate(itemSchema), async (req, res, ne
 });
 
 const itemPatchSchema = z.object({
-  note: z.string().max(2000).optional(),
   isActive: z.boolean().optional(),
 });
 
 router.patch('/:id/items/:itemId', requireAuth, validate(itemPatchSchema), async (req, res, next) => {
   try {
-    const report = await ownedReport(req, res);
+    const report = await editableReport(req, res);
     if (!report) return;
     const item = await ReportItem.findOne({ _id: req.params.itemId, reportId: report._id });
     if (!item) return res.status(404).json({ error: 'NOT_FOUND', message: 'Item not found' });
@@ -173,11 +196,53 @@ router.patch('/:id/items/:itemId', requireAuth, validate(itemPatchSchema), async
 });
 
 router.delete('/:id/items/:itemId', requireAuth, async (req, res) => {
-  const report = await ownedReport(req, res);
+  const report = await editableReport(req, res);
   if (!report) return;
   await ReportItem.deleteOne({ _id: req.params.itemId, reportId: report._id });
   res.json({ ok: true });
 });
+
+// ---- Notes (thread under each item) ----------------------------------------
+
+const noteSchema = z.object({ text: z.string().min(1).max(1000) });
+
+// Add a note. Owner can always add. Firm-mates can add when the report is
+// shared. Any author identifies themselves via req.user.
+router.post('/:id/items/:itemId/notes', requireAuth, validate(noteSchema), async (req, res, next) => {
+  try {
+    const report = await editableReport(req, res);
+    if (!report) return;
+    const item = await ReportItem.findOne({ _id: req.params.itemId, reportId: report._id });
+    if (!item) return res.status(404).json({ error: 'NOT_FOUND', message: 'Item not found' });
+    item.notes.push({
+      authorId: req.user._id,
+      authorName: req.user.name,
+      text: req.body.text.trim(),
+    });
+    await item.save();
+    res.status(201).json(item.notes[item.notes.length - 1]);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Delete a note. Only the note's author can delete their own.
+router.delete('/:id/items/:itemId/notes/:noteId', requireAuth, async (req, res) => {
+  const report = await editableReport(req, res);
+  if (!report) return;
+  const item = await ReportItem.findOne({ _id: req.params.itemId, reportId: report._id });
+  if (!item) return res.status(404).json({ error: 'NOT_FOUND', message: 'Item not found' });
+  const note = item.notes.id(req.params.noteId);
+  if (!note) return res.status(404).json({ error: 'NOT_FOUND', message: 'Note not found' });
+  if (!note.authorId.equals(req.user._id)) {
+    return res.status(403).json({ error: 'FORBIDDEN', message: 'You can only delete your own notes' });
+  }
+  note.deleteOne();
+  await item.save();
+  res.json({ ok: true });
+});
+
+// ---- Share -----------------------------------------------------------------
 
 async function setShared(req, res, isShared) {
   const report = await ownedReport(req, res);
@@ -193,7 +258,6 @@ async function setShared(req, res, isShared) {
   await report.save();
   res.json(report);
 }
-
 router.post('/:id/share', requireAuth, (req, res) => setShared(req, res, true));
 router.delete('/:id/share', requireAuth, (req, res) => setShared(req, res, false));
 

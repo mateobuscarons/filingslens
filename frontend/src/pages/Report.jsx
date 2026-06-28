@@ -10,9 +10,8 @@ import TopBar from '../components/TopBar.jsx';
 // viewer can read everything in one place:
 //   - Finding items show summary + prev/curr paragraph text + citations.
 //   - Q&A items show the question + the cited answer.
-// Same display for owner and shared viewer; only the owner sees edit affordances.
-//
-// Download as PDF: text-only export via jsPDF, one block per item.
+// Notes attached to each item form a thread — any firm member can add to a
+// shared report; only the original note author can delete their own.
 function impactChipClass(impact) {
   if (impact === 'high') return 'chip red';
   if (impact === 'medium') return 'chip amber';
@@ -25,6 +24,16 @@ function findingTypeLabel(type) {
   return 'Modified';
 }
 
+function formatRelative(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
 export default function Report() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -34,8 +43,6 @@ export default function Report() {
   const [items, setItems] = useState([]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState('');
-  const [editingNote, setEditingNote] = useState(null);
-  const [noteText, setNoteText] = useState('');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -47,25 +54,19 @@ export default function Report() {
   }, [id]);
 
   const isOwner = report?.userId?._id === user?.id || report?.userId === user?.id;
+  // Who can add/delete items + add notes: owner OR any firm member when shared.
+  const canEdit = isOwner || (report?.isShared && user?.firmId && report?.firmId === user?.firmId);
 
   async function saveTitle() {
     try {
       const updated = await apiFetch(`/reports/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) });
-      setReport(updated); setEditingTitle(false);
+      setReport((prev) => ({ ...prev, ...updated })); setEditingTitle(false);
       toast.success('Title updated.');
     } catch { toast.error('Could not update title.'); }
   }
 
-  async function saveNote(itemId) {
-    try {
-      await apiFetch(`/reports/${id}/items/${itemId}`, { method: 'PATCH', body: JSON.stringify({ note: noteText }) });
-      setItems((prev) => prev.map((i) => i._id === itemId ? { ...i, note: noteText } : i));
-      setEditingNote(null);
-      toast.success('Note saved.');
-    } catch { toast.error('Could not save note.'); }
-  }
-
   async function deleteItem(itemId) {
+    if (!confirm('Remove this item from the report?')) return;
     try {
       await apiFetch(`/reports/${id}/items/${itemId}`, { method: 'DELETE' });
       setItems((prev) => prev.filter((i) => i._id !== itemId));
@@ -77,9 +78,26 @@ export default function Report() {
     try {
       const method = report.isShared ? 'DELETE' : 'POST';
       const updated = await apiFetch(`/reports/${id}/share`, { method });
-      setReport(updated);
+      setReport((prev) => ({ ...prev, ...updated }));
       toast.success(updated.isShared ? 'Shared with firm.' : 'Unshared.');
     } catch (err) { toast.error(err instanceof ApiError ? err.message : 'Could not update sharing.'); }
+  }
+
+  async function addNote(itemId, text) {
+    const note = await apiFetch(`/reports/${id}/items/${itemId}/notes`, {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    });
+    setItems((prev) => prev.map((i) => i._id === itemId
+      ? { ...i, notes: [...(i.notes ?? []), note] }
+      : i));
+  }
+
+  async function removeNote(itemId, noteId) {
+    await apiFetch(`/reports/${id}/items/${itemId}/notes/${noteId}`, { method: 'DELETE' });
+    setItems((prev) => prev.map((i) => i._id === itemId
+      ? { ...i, notes: (i.notes ?? []).filter((n) => n._id !== noteId) }
+      : i));
   }
 
   if (loading) return null;
@@ -93,7 +111,7 @@ export default function Report() {
         <div>
           <p className="eyebrow">Report</p>
           <h2>Research report.</h2>
-          <p className="lead">{report.isShared ? 'Shared with firm.' : 'Personal draft.'} Saved findings and cited answers.</p>
+          <p className="lead">{report.isShared ? 'Shared with firm — any member can add notes.' : 'Personal draft.'}</p>
         </div>
 
         <div className="report-paper">
@@ -113,14 +131,11 @@ export default function Report() {
               <ItemCard
                 key={item._id}
                 item={item}
-                isOwner={isOwner}
-                editingNote={editingNote}
-                noteText={noteText}
-                setNoteText={setNoteText}
-                onEditNote={() => { setEditingNote(item._id); setNoteText(item.note || ''); }}
-                onCancelNote={() => setEditingNote(null)}
-                onSaveNote={() => saveNote(item._id)}
+                currentUserId={user?.id}
+                canEdit={canEdit}
                 onDelete={() => deleteItem(item._id)}
+                onAddNote={(text) => addNote(item._id, text)}
+                onRemoveNote={(noteId) => removeNote(item._id, noteId)}
               />
             ))}
           </div>
@@ -194,9 +209,9 @@ function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, 
 
 // ---------- Item display --------------------------------------------------
 
-function ItemCard({ item, isOwner, editingNote, noteText, setNoteText, onEditNote, onCancelNote, onSaveNote, onDelete }) {
+function ItemCard({ item, currentUserId, canEdit, onDelete, onAddNote, onRemoveNote }) {
   return (
-    <div style={{ padding: '22px 26px', border: '1px solid var(--line)', borderRadius: 22, background: 'var(--bg)' }}>
+    <div className="report-item">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
         <div style={{ flex: 1 }}>
           {item.kind === 'finding' ? <FindingBody item={item} /> : <AnswerBody item={item} />}
@@ -211,36 +226,93 @@ function ItemCard({ item, isOwner, editingNote, noteText, setNoteText, onEditNot
         </div>
       </div>
 
-      {/* Note + actions */}
-      <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed var(--line)' }}>
-        {editingNote === item._id ? (
-          <div style={{ display: 'flex', gap: 8 }}>
-            <input
-              value={noteText}
-              onChange={(e) => setNoteText(e.target.value)}
-              placeholder="Add a note…"
-              autoFocus
-              onKeyDown={(e) => { if (e.key === 'Enter') onSaveNote(); if (e.key === 'Escape') onCancelNote(); }}
-              style={{ flex: 1, padding: '8px 12px', borderRadius: 10, border: '1px solid var(--line)', background: 'white', fontSize: 13, fontFamily: 'inherit', outline: 'none' }}
-            />
-            <button className="button accent" onClick={onSaveNote} style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}>Save</button>
-            <button className="button ghost" onClick={onCancelNote} style={{ minHeight: 34, padding: '0 12px', fontSize: 12 }}>Cancel</button>
-          </div>
-        ) : (
-          <div className="row-sub">
-            {item.note ? <em>Note: {item.note}</em> : <em style={{ color: 'var(--muted)' }}>No note.</em>}
-            {isOwner && (
-              <span style={{ marginLeft: 12 }}>
-                <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={onEditNote}>
-                  {item.note ? 'Edit note' : 'Add note'}
-                </span>
-                {' · '}
-                <span style={{ cursor: 'pointer', textDecoration: 'underline', color: 'var(--red)' }} onClick={onDelete}>Remove</span>
-              </span>
+      {item.addedByName && (
+        <div className="row-sub" style={{ marginTop: 8, fontSize: 12 }}>
+          Added by {item.addedByName}
+        </div>
+      )}
+
+      <NotesPanel
+        notes={item.notes ?? []}
+        currentUserId={currentUserId}
+        canAdd={canEdit}
+        onAdd={onAddNote}
+        onRemove={onRemoveNote}
+      />
+
+      {canEdit && (
+        <div className="row-sub" style={{ marginTop: 12 }}>
+          <span style={{ cursor: 'pointer', textDecoration: 'underline', color: 'var(--red)' }} onClick={onDelete}>
+            Remove item
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
+  const [text, setText] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(e) {
+    e?.preventDefault?.();
+    const value = text.trim();
+    if (!value || submitting) return;
+    setSubmitting(true);
+    try {
+      await onAdd(value);
+      setText('');
+    } catch (err) {
+      // surface gently — the row stays so the user can retry
+      console.error(err);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="notes-panel">
+      <div className="notes-head">
+        <span className="notes-label">Notes</span>
+        <span className="notes-count">{notes.length}</span>
+      </div>
+
+      {notes.length === 0 && (
+        <p className="notes-empty">No notes yet.</p>
+      )}
+
+      {notes.map((n) => (
+        <div className="note" key={n._id}>
+          <div className="note-head">
+            <span className="note-author">{n.authorName || 'Member'}</span>
+            <span className="note-time">{formatRelative(n.createdAt)}</span>
+            {n.authorId === currentUserId && (
+              <button className="note-delete" onClick={() => onRemove(n._id)} title="Delete this note">
+                ×
+              </button>
             )}
           </div>
-        )}
-      </div>
+          <p className="note-text">{n.text}</p>
+        </div>
+      ))}
+
+      {canAdd && (
+        <form className="note-compose" onSubmit={submit}>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Add a note for the team…"
+            rows={2}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(e);
+            }}
+          />
+          <button type="submit" className="button accent" disabled={!text.trim() || submitting}>
+            {submitting ? '…' : 'Post'}
+          </button>
+        </form>
+      )}
     </div>
   );
 }
@@ -294,7 +366,7 @@ function downloadPdf(report, items) {
   const doc = new jsPDF({ unit: 'pt', format: 'a4' });
   const W = doc.internal.pageSize.getWidth();
   const H = doc.internal.pageSize.getHeight();
-  const M = 56; // margin
+  const M = 56;
   let y = M;
 
   const writeLines = (text, opts = {}) => {
@@ -342,9 +414,14 @@ function downloadPdf(report, items) {
       y += 4;
       writeLines('Citations: ' + cites.map((c) => `FY${c.filingYear} p.${c.page}`).join('; '), { size: 9, color: [110, 110, 110] });
     }
-    if (item.note) {
-      y += 4;
-      writeLines(`Note: ${item.note}`, { size: 10, color: [60, 60, 60] });
+
+    const notes = item.notes ?? [];
+    if (notes.length) {
+      y += 6;
+      writeLines('Notes:', { size: 10, bold: true, color: [60, 60, 60] });
+      for (const n of notes) {
+        writeLines(`  • ${n.authorName || 'Member'}: ${n.text}`, { size: 10, color: [60, 60, 60] });
+      }
     }
     y += 14;
   }
