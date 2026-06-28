@@ -3,30 +3,9 @@ import fs from 'fs/promises';
 
 const MIN_PARA_CHARS = 150;
 const MAX_PARA_CHARS = 400;
-const MIN_CHUNK_CHARS = 60;                 // emit-floor after sentence splitting
 const NUMBERED_HEADING = /^\d+(\.\d+)*\.?\s+[A-ZÄÖÜ][A-Za-zÄÖÜäöüß]/;
 const CAPS_HEADING = /^[A-ZÄÖÜ][A-ZÄÖÜ \-&,/]{4,}$/;
 const NOTE_HEADING = /^Note\s+\d+/;
-
-// Split a flushed paragraph into single-or-double-sentence chunks. Each
-// chunk gets its own embedding downstream, so retrieval sees one focused
-// topic per row instead of an averaged multi-topic blob.
-function splitIntoChunks(text) {
-  const parts = text.split(/(?<=[.!?…])\s+(?=[A-ZÄÖÜ"„«])/);
-  const chunks = [];
-  let buf = '';
-  for (const s of parts) {
-    if (!buf) { buf = s; continue; }
-    if (buf.length < MIN_CHUNK_CHARS) { buf = `${buf} ${s}`; continue; }
-    chunks.push(buf);
-    buf = s;
-  }
-  if (buf) {
-    if (buf.length >= MIN_CHUNK_CHARS || !chunks.length) chunks.push(buf);
-    else chunks[chunks.length - 1] = `${chunks[chunks.length - 1]} ${buf}`;
-  }
-  return chunks;
-}
 
 export async function extractPages(filePath) {
   const data = await fs.readFile(filePath);
@@ -65,9 +44,7 @@ export function paginateToParagraphs(pages) {
     const flush = () => {
       const text = buf.trim();
       if (text.length >= MIN_PARA_CHARS) {
-        for (const chunk of splitIntoChunks(text)) {
-          paragraphs.push({ page: pageNumber, index: paraIndex++, section: currentSection, text: chunk });
-        }
+        paragraphs.push({ page: pageNumber, index: paraIndex++, section: currentSection, text });
       }
       buf = '';
     };

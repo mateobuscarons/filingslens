@@ -35,7 +35,7 @@ invites + seat-based billing.
 | Validation | Zod (per-route schemas, wrapped by `validate()` middleware) |
 | AI — chat | Groq via OpenAI SDK pointed at `https://api.groq.com/openai/v1` |
 | LLM — judge (compare) | `openai/gpt-oss-120b` — strict JSON Schema with constrained decoding |
-| LLM — Q&A answerer | `openai/gpt-oss-20b` — strict JSON Schema, reasoning model (TPM 8K, TPD 200K — sustainable headroom) |
+| LLM — Q&A answerer | `qwen/qwen3-32b` — JSON object mode, strong German |
 | LLM — utility | `llama-3.1-8b-instant` — fast/cheap, used for any incidental call |
 | AI — embeddings | NVIDIA NIM `nvidia/nv-embedqa-e5-v5` (1024-dim, asymmetric passage/query) |
 | PDF parsing | `pdfjs-dist/legacy/build/pdf.mjs` |
@@ -353,27 +353,15 @@ $ref, $defs, anyOf, enum, const, format).
 asymmetrically). Batches of 16 per request. Returns 1024-dim vectors.
 
 ### 8.4 PDF parsing — `ai/pdf.js`
-Three passes:
+Two passes:
 1. `extractPages` — pdfjs reads each page, items are bucketed by
    Y-coordinate to reconstruct lines, then sorted by X.
 2. `paginateToParagraphs` — iterate lines; detect headings (numbered,
    ALL-CAPS, or `Note N`) → set `currentSection`; otherwise accumulate
    into a buffer that flushes at ~400 chars. Drop anything < 150 chars.
-3. `splitIntoChunks` — each flushed paragraph is split at sentence
-   boundaries (`. ! ?` followed by an uppercase letter) into chunks of
-   ~60–250 chars. Tiny fragments are glued to neighbours. Each chunk
-   becomes its own embedded row.
 
-The sentence-level chunking is what makes Q&A retrieval work on
-multi-topic paragraphs: when a paragraph mixes "stock awards + pensions +
-total board comp", the averaged embedding doesn't surface the comp
-sentence — but as its own ~150-char chunk, the comp sentence has a
-focused embedding and ranks where it should. ~2× more rows in the
-`paragraphs` collection vs. paragraph-level chunking, no other downstream
-changes — `quoteResolver` keeps working on `paragraph.text`.
-
-Section detection stays lossy on purpose — the comparison pipeline doesn't
-use the `section` field (the LLM emits its own topic label per finding).
+The section detection is intentionally lossy — the new compare pipeline
+no longer relies on it (the LLM provides clean topic labels for findings).
 
 ### 8.5 Ingest orchestrator — `ai/ingest.js`
 `ingestFiling(filingId, filePath)`:
@@ -428,33 +416,25 @@ Tunables in `ai/compare.js`:
 
 `answerQuestion(companyId, questionText)`:
 1. Find all `Filing`s for the company with `ingestStatus = 'ready'`.
-2. Load all their Paragraphs (sentence-level chunks). Embed the question.
-3. Score every chunk by cosine. Sort, take top **70**.
-4. Build a numbered passage list. Send to `gpt-oss-20b` with strict JSON
-   Schema:
+2. Load all their Paragraphs. Embed the question.
+3. Score every paragraph by cosine. Sort, take top 20.
+4. **Rebalance per filing year.** Ensure each filing year contributes at
+   least min(2, available) passages to the LLM input — avoids the
+   "all from one year" failure on comparative questions. Slice to top 8.
+5. Build a numbered passage list. Send to `qwen3-32b` with JSON object
+   mode:
    ```
    { answer, citations: [{ passage_number, quote }] }
    ```
    Or, if the model decides there isn't enough evidence,
    `{ answer: "INSUFFICIENT_EVIDENCE", citations: [] }`.
-5. **Resolve quotes.** For each citation, run `resolveQuote` against the
+6. **Resolve quotes.** For each citation, run `resolveQuote` against the
    cited passage. Unresolved citations are dropped.
-6. **Strip dead markers.** Any `[N]` in the answer that doesn't have a
+7. **Strip dead markers.** Any `[N]` in the answer that doesn't have a
    resolved citation gets removed from the text, so the UI never renders
    a dead link.
-7. Set `citation.marker = passage_number` directly — the inline `[N]`
+8. Set `citation.marker = passage_number` directly — the inline `[N]`
    markers in the answer always match the citation cards.
-
-No sub-query expansion, no per-filing rebalancing, no keyword boosts —
-the sentence chunking does the heavy lifting. Plain top-K cosine works
-because each chunk has a focused single-topic embedding.
-
-**Known limitations.** Pure vector retrieval is sensitive to vocabulary.
-A question with synonym vocabulary that diverges from the filing's wording
-("Gesamtvergütung" vs the filing's "gewährte Vergütung sowie gewährten
-Leistungen") may not surface the right chunk. The system refuses cleanly
-in that case rather than confabulating. A cross-encoder reranker would
-close this gap if needed.
 
 ### 8.8 Quote resolver — `ai/quoteResolver.js`
 The smart part of the system, but kept simple. Given a quote string and a

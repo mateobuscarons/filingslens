@@ -11,8 +11,8 @@ const TASKS = {
     supportsStrictSchema: true,
   },
   qa: {
-    model: () => process.env.GROQ_QA_MODEL || 'openai/gpt-oss-20b',
-    supportsStrictSchema: true,
+    model: () => process.env.GROQ_QA_MODEL || 'qwen/qwen3-32b',
+    supportsStrictSchema: false,
   },
   utility: {
     model: () => process.env.GROQ_UTILITY_MODEL || 'llama-3.1-8b-instant',
