@@ -4,8 +4,6 @@ const filingSchema = new mongoose.Schema(
   {
     companyId: { type: mongoose.Schema.Types.ObjectId, ref: 'Company', required: true },
     fiscalYear: { type: Number, required: true },
-    documentType: { type: String, default: 'annual_report' },
-    sourceUrl: { type: String, default: '' },
     fileName: { type: String, default: '' },
     pageCount: { type: Number, default: 0 },
     ingestStatus: {

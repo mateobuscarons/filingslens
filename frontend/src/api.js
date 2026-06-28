@@ -1,4 +1,13 @@
-const API = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+export const API = import.meta.env.VITE_API_URL || 'http://localhost:4000';
+
+// Build a direct browser URL for a backend resource (e.g. PDF view), with
+// the JWT appended as ?token= so a new tab can authenticate without our
+// Authorization header.
+export function apiUrl(path) {
+  const token = localStorage.getItem('token');
+  const sep = path.includes('?') ? '&' : '?';
+  return `${API}${path}${token ? `${sep}token=${encodeURIComponent(token)}` : ''}`;
+}
 
 export class ApiError extends Error {
   constructor(status, error, message, fields) {

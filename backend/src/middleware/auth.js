@@ -9,8 +9,11 @@ export function signToken(user) {
 }
 
 export async function requireAuth(req, res, next) {
+  // Accept token from Authorization header (default) or ?token= query param.
+  // Query-param auth exists so the browser can open a PDF URL directly in a
+  // new tab — the PDF viewer can't carry our Authorization header.
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const token = header.startsWith('Bearer ') ? header.slice(7) : req.query.token || null;
   if (!token) return res.status(401).json({ error: 'UNAUTHORIZED', message: 'Missing token' });
   try {
     const payload = jwt.verify(token, SECRET);

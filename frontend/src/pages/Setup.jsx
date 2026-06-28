@@ -136,18 +136,17 @@ export default function Setup() {
               <div>
                 <h3 className="panel-title">What happens next</h3>
                 <p className="panel-sub">
-                  Each PDF is parsed page by page, paragraphs are embedded,
-                  then we compare current vs previous and surface the most
-                  material findings.
+                  Each PDF is parsed into paragraphs and embedded. A single
+                  judge call then reads the most-likely-changed pairs and
+                  quotes the exact spans that prove each change.
                 </p>
               </div>
             </div>
             <div className="backend-steps">
               <span className="chip dark">1. Parse PDFs</span>
               <span className="chip dark">2. Embed paragraphs</span>
-              <span className="chip dark">3. Compare current vs previous</span>
-              <span className="chip dark">4. Rank by materiality</span>
-              <span className="chip dark">5. Summarize top findings</span>
+              <span className="chip dark">3. Match candidate pairs</span>
+              <span className="chip dark">4. LLM judge: cite the changes</span>
             </div>
           </div>
         </div>

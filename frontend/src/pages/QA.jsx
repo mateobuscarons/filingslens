@@ -3,6 +3,8 @@ import { useParams } from 'react-router-dom';
 import { apiFetch, ApiError } from '../api.js';
 import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
+import CitationCard from '../components/CitationCard.jsx';
+import { renderAnswerWithCitations } from '../components/CitationInline.jsx';
 
 export default function QA() {
   const { id: comparisonId } = useParams();
@@ -74,7 +76,7 @@ export default function QA() {
     }
   }
 
-  const selectedCitations = selected?.citations ?? [];
+  const selectedCitations = (selected?.citations ?? []).slice().sort((a, b) => (a.marker || 0) - (b.marker || 0));
 
   return (
     <div className="screen">
@@ -85,7 +87,7 @@ export default function QA() {
           <p className="eyebrow">Cited Q&A</p>
           <h2>Ask company-level questions.</h2>
           <p className="lead">
-            Answers are grounded in the filing text. Every claim cites its source paragraph.
+            Answers are grounded in the filing text. Click any [N] to jump to its source.
           </p>
         </div>
 
@@ -101,16 +103,17 @@ export default function QA() {
               </p>
             )}
 
-            {selectedCitations.map((c, i) => (
-              <div key={i}>
-                <div className="citation-quote" style={{ marginTop: 24 }}>
-                  "{c.excerpt}"
-                </div>
-                <span className="citation-meta">
-                  {companyName} · FY{c.filingYear} · p. {c.page}
-                </span>
-              </div>
-            ))}
+            <div className="citation-stack">
+              {selectedCitations.map((c) => (
+                <CitationCard
+                  key={c._id || c.marker}
+                  id={`citation-${c.marker}`}
+                  citation={c}
+                  marker={c.marker}
+                  companyName={companyName}
+                />
+              ))}
+            </div>
 
             {selected && selected.status === 'ready' && (
               <div className="actions" style={{ marginTop: 28 }}>
@@ -128,21 +131,18 @@ export default function QA() {
               {companyName ? `Asking about ${companyName}` : 'Loading…'}
             </p>
 
-            {/* Question history */}
-            <div style={{ marginTop: 24, display: 'grid', gap: 16, maxHeight: 420, overflowY: 'auto' }}>
+            <div style={{ marginTop: 24, display: 'grid', gap: 16, maxHeight: 460, overflowY: 'auto' }}>
               {questions.map(q => (
                 <div
                   key={q._id}
                   onClick={() => setSelected(q)}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', opacity: selected?._id === q._id ? 1 : 0.7 }}
                 >
-                  <div className={`question ${selected?._id === q._id ? '' : ''}`}
-                    style={{ opacity: selected?._id === q._id ? 1 : 0.7 }}
-                  >
-                    {q.text}
-                  </div>
+                  <div className="question">{q.text}</div>
                   {q.status === 'ready' && (
-                    <div className="answer">{q.answer}</div>
+                    <div className="answer">
+                      {renderAnswerWithCitations(q.answer)}
+                    </div>
                   )}
                   {q.status === 'no_evidence' && (
                     <div className="answer" style={{ color: 'var(--muted)', fontStyle: 'italic' }}>
@@ -162,12 +162,11 @@ export default function QA() {
               {loading && (
                 <div>
                   <div className="question">{text || '…'}</div>
-                  <div className="answer" style={{ color: 'var(--muted)' }}>Thinking… this takes ~20s</div>
+                  <div className="answer" style={{ color: 'var(--muted)' }}>Thinking…</div>
                 </div>
               )}
             </div>
 
-            {/* Input */}
             <form onSubmit={handleSubmit} style={{ marginTop: 24, display: 'flex', gap: 12 }}>
               <input
                 ref={inputRef}

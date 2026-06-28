@@ -60,23 +60,19 @@ router.post('/sessions/:id/questions', requireAuth, validate(askSchema), async (
 
     const question = await Question.create({ sessionId: session._id, text: req.body.text, status: 'pending' });
     try {
-      const { status, answer, sources } = await answerQuestion(session.companyId, req.body.text);
+      const { status, answer, citations } = await answerQuestion(session.companyId, req.body.text);
       question.status = status;
       question.answer = answer;
       await question.save();
 
-      const citationDocs = sources.map((s) => ({
+      const citationDocs = citations.map((c) => ({
+        ...c,
         sourceType: 'Question',
         sourceId: question._id,
-        paragraphId: s.paragraphId,
-        filingId: s.filingId,
-        filingYear: s.fiscalYear,
-        page: s.page,
-        excerpt: s.excerpt,
       }));
-      if (citationDocs.length) await Citation.insertMany(citationDocs);
+      const inserted = citationDocs.length ? await Citation.insertMany(citationDocs) : [];
 
-      res.status(201).json({ ...question.toObject(), citations: citationDocs, sources });
+      res.status(201).json({ ...question.toObject(), citations: inserted });
     } catch (err) {
       question.status = 'failed';
       question.error = err.message;
