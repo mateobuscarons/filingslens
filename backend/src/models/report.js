@@ -8,18 +8,33 @@ const reportSchema = new mongoose.Schema(
     title: { type: String, required: true },
     summary: { type: String, default: '' },
     isShared: { type: Boolean, default: false },
+    sharedWith: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
   },
   { timestamps: true }
 );
 
 export const ResearchReport = mongoose.model('ResearchReport', reportSchema);
 
+// One note in the thread under a report item. Multiple notes per item;
+// any author allowed when the report is shared with the firm.
+const noteSchema = new mongoose.Schema(
+  {
+    authorId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    authorName: { type: String, default: '' },     // denormalized so we don't populate on read
+    text: { type: String, required: true, maxlength: 1000 },
+    createdAt: { type: Date, default: Date.now },
+  },
+  { _id: true }
+);
+
 const reportItemSchema = new mongoose.Schema(
   {
     reportId: { type: mongoose.Schema.Types.ObjectId, ref: 'ResearchReport', required: true, index: true },
     kind: { type: String, enum: ['finding', 'answer'], required: true },
     refId: { type: mongoose.Schema.Types.ObjectId, required: true },
-    note: { type: String, default: '' },
+    addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    addedByName: { type: String, default: '' },
+    notes: { type: [noteSchema], default: [] },
     order: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },
   },

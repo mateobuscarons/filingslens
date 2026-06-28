@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { apiFetch } from '../api.js';
+import { apiFetch, ApiError } from '../api.js';
+import { useAuth } from '../auth.jsx';
+import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
 
 const STEPS = [
-  { label: 'Comparing paragraphs',     sub: 'Cosine similarity across all paragraph pairs' },
-  { label: 'Ranking by materiality',   sub: 'Numeric delta + keyword signal + section weight' },
-  { label: 'Summarizing top findings', sub: 'One LLM-generated sentence per finding' },
-  { label: 'Complete',                 sub: 'Results ready' },
+  { label: 'Matching paragraphs',  sub: 'Embedding cosine finds the closest prior paragraph for each current one.' },
+  { label: 'Identifying changes',  sub: 'One LLM judge call: read the top candidate pairs and quote what materially changed.' },
+  { label: 'Complete',             sub: 'Findings persisted with byte-accurate citation spans.' },
 ];
 
-// status → which step index is active (0-3)
-const ACTIVE = { pending: 0, comparing: 0, ranking: 1, summarizing: 2, completed: 3, failed: -1 };
+// status → which step index is active (0..STEPS.length-1)
+const ACTIVE = { pending: 0, comparing: 0, summarizing: 1, completed: 2, failed: -1 };
 
 function impactChipClass(impact) {
   if (impact === 'high') return 'chip red';
@@ -21,8 +22,26 @@ function impactChipClass(impact) {
 
 export default function Analysis() {
   const { id } = useParams();
+  const { user } = useAuth();
+  const toast = useToast();
   const [comparison, setComparison] = useState(null);
   const [findings, setFindings] = useState([]);
+  const [sharing, setSharing] = useState(false);
+
+  async function toggleShare() {
+    if (!comparison) return;
+    setSharing(true);
+    try {
+      const method = comparison.isShared ? 'DELETE' : 'POST';
+      const updated = await apiFetch(`/comparisons/${id}/share`, { method });
+      setComparison((prev) => ({ ...prev, isShared: updated.isShared }));
+      toast.success(updated.isShared ? 'Shared with firm.' : 'Unshared.');
+    } catch (err) {
+      toast.error(err instanceof ApiError ? err.message : 'Could not update sharing.');
+    } finally {
+      setSharing(false);
+    }
+  }
 
   // Poll comparison every 3s until completed/failed.
   useEffect(() => {
@@ -52,6 +71,9 @@ export default function Analysis() {
   const company = comparison.companyId?.name ?? 'Unknown';
   const currYear = comparison.currentFilingId?.fiscalYear ?? '—';
   const prevYear = comparison.previousFilingId?.fiscalYear ?? '—';
+  const owner = typeof comparison.userId === 'object' ? comparison.userId : null;
+  const isOwner = owner?._id === user?.id;
+  const canShare = isOwner && Boolean(user?.firmId);
 
   if (comparison.status === 'failed') {
     return (
@@ -70,7 +92,7 @@ export default function Analysis() {
       <PageShell
         eyebrow="Running"
         heading={`Comparing ${company} · ${currYear} vs ${prevYear}.`}
-        lead="This usually takes 60–90 seconds. Stay on this page."
+        lead="Usually 20–40 seconds. One judge call across the top candidate pairs."
       >
         <div className="panel">
           <div className="panel-head">
@@ -99,31 +121,40 @@ export default function Analysis() {
     );
   }
 
-  // Completed — group by section
-  const bySection = {};
+  // Completed — group by LLM-assigned topic (the `section` field is now the
+  // LLM-emitted "Board compensation"-style label, not the noisy PDF heading).
+  const byTopic = {};
   for (const f of findings) {
-    const key = f.section || 'Unclassified';
-    (bySection[key] ||= []).push(f);
+    const key = f.section || 'Untitled';
+    (byTopic[key] ||= []).push(f);
   }
-  const sections = Object.entries(bySection);
+  const topics = Object.entries(byTopic);
   const counts = comparison.counts ?? { modified: 0, added: 0, removed: 0 };
 
   return (
     <PageShell
       eyebrow="Results"
-      heading="Impact-ranked findings."
-      lead={`${findings.length} surfaced findings. ${counts.modified} modified, ${counts.added} added, ${counts.removed} removed.`}
+      heading="Changes the judge surfaced."
+      lead={`${findings.length} findings · ${counts.modified} modified, ${counts.added} newly disclosed, ${counts.removed} no longer disclosed. Each finding cites a verbatim span in both filings.`}
     >
       <div className="actions" style={{ marginTop: 0 }}>
         <Link className="button accent" to={`/analyses/${id}/qa`}>Ask follow-up questions</Link>
         <Link className="button ghost" to="/reports">View reports</Link>
+        {canShare && (
+          <button className="button ghost" onClick={toggleShare} disabled={sharing}>
+            {sharing ? '…' : comparison.isShared ? 'Unshare' : 'Share with firm'}
+          </button>
+        )}
+        {!isOwner && owner?.name && (
+          <span className="chip soft-accent" style={{ alignSelf: 'center' }}>Shared by {owner.name}</span>
+        )}
       </div>
 
-      {sections.map(([section, list]) => (
-        <div className="panel" key={section}>
+      {topics.map(([topic, list]) => (
+        <div className="panel" key={topic}>
           <div className="panel-head">
             <div>
-              <h3 className="panel-title">{section}</h3>
+              <h3 className="panel-title">{topic}</h3>
               <p className="panel-sub">{list.length} {list.length === 1 ? 'finding' : 'findings'}</p>
             </div>
           </div>
@@ -133,7 +164,7 @@ export default function Analysis() {
                 <div>
                   <div className="row-title">{f.summary || f.excerpt?.slice(0, 120)}</div>
                   <div className="row-sub">
-                    {f.type} · materiality {f.materialityScore?.toFixed(2)}
+                    {findingTypeLabel(f.type)}
                   </div>
                 </div>
                 <Link className={impactChipClass(f.impact)} to={`/analyses/${id}/findings/${f._id}`}>
@@ -146,6 +177,12 @@ export default function Analysis() {
       ))}
     </PageShell>
   );
+}
+
+function findingTypeLabel(type) {
+  if (type === 'added') return 'Newly disclosed';
+  if (type === 'removed') return 'No longer disclosed';
+  return 'Modified';
 }
 
 function PageShell({ eyebrow, heading, lead, children }) {

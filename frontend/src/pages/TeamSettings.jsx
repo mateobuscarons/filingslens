@@ -57,12 +57,17 @@ export default function TeamSettings() {
   }
 
   async function removeMember(m) {
-    if (!confirm(`Remove ${m.name} from the firm?`)) return;
+    const ok = confirm(
+      `Delete ${m.name}'s account?\n\n` +
+      `This permanently removes ${m.name} from the firm AND deletes everything they own — ` +
+      `their analyses, findings, reports, and Q&A sessions. This cannot be undone.`
+    );
+    if (!ok) return;
     try {
       await apiFetch(`/firms/${firmId}/members/${m._id}`, { method: 'DELETE' });
       setMembers((prev) => prev.filter((x) => x._id !== m._id));
-      toast.success(`${m.name} removed.`);
-    } catch (err) { toast.error('Could not remove member.'); }
+      toast.success(`${m.name}'s account deleted.`);
+    } catch (err) { toast.error('Could not delete account.'); }
   }
 
   if (!firmId) {
@@ -106,11 +111,11 @@ export default function TeamSettings() {
                 <div className="data-row" key={m._id}>
                   <div>
                     <div className="row-title">{m.name}</div>
-                    <div className="row-sub">{m.email} · {m.role}</div>
+                    <div className="row-sub">{m.email} · {m.role === 'firm_admin' ? 'Admin' : 'Analyst'}</div>
                   </div>
                   {m._id !== user.id && (
                     <button className="chip red" style={{ border: 'none', cursor: 'pointer' }} onClick={() => removeMember(m)}>
-                      Remove
+                      Delete account
                     </button>
                   )}
                 </div>

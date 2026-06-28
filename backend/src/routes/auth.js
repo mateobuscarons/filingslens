@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { User } from '../models/user.js';
@@ -6,6 +7,7 @@ import { InvestmentFirm } from '../models/firm.js';
 import { TeamInvite } from '../models/teamInvite.js';
 import { signToken } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
+import { sendVerificationEmail, sendPasswordReset } from '../email.js';
 
 const router = Router();
 
@@ -41,7 +43,17 @@ router.post('/register', validate(registerSchema), async (req, res, next) => {
   try {
     const body = req.body;
 
-    if (await User.findOne({ email: body.email })) {
+    const existing = await User.findOne({ email: body.email });
+    if (existing) {
+      if (!existing.emailVerified) {
+        // Unverified — resend the link instead of blocking
+        const verifyToken = crypto.randomBytes(32).toString('hex');
+        existing.emailVerifyToken = verifyToken;
+        existing.emailVerifyExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+        await existing.save();
+        sendVerificationEmail({ toName: existing.name, toEmail: existing.email, token: verifyToken });
+        return res.status(201).json({ pending: true, message: 'Check your email to verify your account.' });
+      }
       return res.status(409).json({
         error: 'EMAIL_TAKEN',
         message: 'An account with this email already exists',
@@ -82,15 +94,21 @@ router.post('/register', validate(registerSchema), async (req, res, next) => {
       await invite.save();
     }
 
+    const verifyToken = crypto.randomBytes(32).toString('hex');
     const user = await User.create({
       name: body.name,
       email: body.email,
       passwordHash,
       role,
       firmId: firm?._id || null,
+      emailVerified: false,
+      emailVerifyToken: verifyToken,
+      emailVerifyExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000),
     });
 
-    res.status(201).json({ token: signToken(user), user: publicUser(user, firm) });
+    sendVerificationEmail({ toName: user.name, toEmail: user.email, token: verifyToken });
+
+    res.status(201).json({ pending: true, message: 'Check your email to verify your account.' });
   } catch (err) {
     next(err);
   }
@@ -107,8 +125,73 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
     if (!user || !(await bcrypt.compare(req.body.password, user.passwordHash))) {
       return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Email or password incorrect' });
     }
+    if (!user.emailVerified) {
+      return res.status(403).json({
+        error: 'EMAIL_NOT_VERIFIED',
+        message: 'Please verify your email before signing in.',
+      });
+    }
     const firm = user.firmId ? await InvestmentFirm.findById(user.firmId) : null;
     res.json({ token: signToken(user), user: publicUser(user, firm) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/verify', async (req, res, next) => {
+  try {
+    const { token } = req.query;
+    if (!token) return res.status(400).json({ error: 'MISSING_TOKEN', message: 'No token provided' });
+    const user = await User.findOne({ emailVerifyToken: token });
+    if (!user) {
+      return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Link is invalid or already used.' });
+    }
+    if (user.emailVerifyExpiry && user.emailVerifyExpiry < new Date()) {
+      return res.status(400).json({ error: 'TOKEN_EXPIRED', message: 'Link has expired. Please register again to get a new one.' });
+    }
+    user.emailVerified = true;
+    user.emailVerifyToken = null;
+    user.emailVerifyExpiry = null;
+    await user.save();
+    const firm = user.firmId ? await InvestmentFirm.findById(user.firmId) : null;
+    res.json({ token: signToken(user), user: publicUser(user, firm) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/forgot-password', async (req, res, next) => {
+  try {
+    const { email } = req.body;
+    const user = await User.findOne({ email: email?.toLowerCase().trim() });
+    // Always return 200 to avoid exposing which emails are registered
+    if (!user || !user.emailVerified) return res.json({ ok: true });
+    const token = crypto.randomBytes(32).toString('hex');
+    user.passwordResetToken = token;
+    user.passwordResetExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await user.save();
+    sendPasswordReset({ toName: user.name, toEmail: user.email, token });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/reset-password', async (req, res, next) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password || password.length < 8) {
+      return res.status(400).json({ error: 'VALIDATION', message: 'Token and password (min 8 chars) required' });
+    }
+    const user = await User.findOne({ passwordResetToken: token });
+    if (!user || !user.passwordResetExpiry || user.passwordResetExpiry < new Date()) {
+      return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Link is invalid or has expired.' });
+    }
+    user.passwordHash = await bcrypt.hash(password, 10);
+    user.passwordResetToken = null;
+    user.passwordResetExpiry = null;
+    await user.save();
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }

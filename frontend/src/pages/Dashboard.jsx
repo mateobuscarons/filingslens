@@ -13,6 +13,11 @@ function statusLabel(c) {
   return 'Running…';
 }
 
+function ownerOf(item) {
+  // populated as { _id, name } in the GET routes
+  return typeof item?.userId === 'object' ? item.userId : null;
+}
+
 export default function Dashboard() {
   const { user } = useAuth();
   const [comparisons, setComparisons] = useState([]);
@@ -57,17 +62,31 @@ export default function Dashboard() {
             {!loading && comparisons.length === 0 && (
               <p className="panel-sub" style={{ padding: '0 4px' }}>No analyses yet. Start one above.</p>
             )}
-            {comparisons.slice(0, 8).map((c) => (
-              <div className="data-row" key={c._id}>
-                <div>
-                  <div className="row-title">
-                    {c.companyId?.name ?? 'Unknown'} · {c.currentFilingId?.fiscalYear} vs {c.previousFilingId?.fiscalYear}
+            {comparisons.slice(0, 8).map((c) => {
+              const owner = ownerOf(c);
+              const isMine = owner?._id === user?.id;
+              return (
+                <div className="data-row" key={c._id}>
+                  <div>
+                    <div className="row-title">
+                      {c.companyId?.name ?? 'Unknown'} · {c.currentFilingId?.fiscalYear} vs {c.previousFilingId?.fiscalYear}
+                      {c.isShared && !isMine && owner?.name && (
+                        <span className="chip soft-accent" style={{ marginLeft: 10, fontSize: 11 }}>
+                          Shared by {owner.name}
+                        </span>
+                      )}
+                      {c.isShared && isMine && (
+                        <span className="chip soft-accent" style={{ marginLeft: 10, fontSize: 11 }}>
+                          Shared
+                        </span>
+                      )}
+                    </div>
+                    <div className="row-sub">{statusLabel(c)}</div>
                   </div>
-                  <div className="row-sub">{statusLabel(c)}</div>
+                  <Link className="chip soft-accent" to={`/analyses/${c._id}`}>Open</Link>
                 </div>
-                <Link className="chip soft-accent" to={`/analyses/${c._id}`}>Open</Link>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
 
@@ -81,15 +100,23 @@ export default function Dashboard() {
               <Link className="button ghost" to="/reports">All reports</Link>
             </div>
             <div className="row-list">
-              {reports.slice(0, 4).map((r) => (
-                <div className="data-row" key={r._id}>
-                  <div>
-                    <div className="row-title">{r.title}</div>
-                    <div className="row-sub">{r.isShared ? 'Shared with firm' : 'Personal draft'}</div>
+              {reports.slice(0, 4).map((r) => {
+                const owner = ownerOf(r);
+                const isMine = owner?._id === user?.id;
+                return (
+                  <div className="data-row" key={r._id}>
+                    <div>
+                      <div className="row-title">{r.title}</div>
+                      <div className="row-sub">
+                        {r.isShared
+                          ? (isMine ? 'Shared with firm' : `Shared by ${owner?.name ?? 'firm-mate'}`)
+                          : 'Personal draft'}
+                      </div>
+                    </div>
+                    <Link className="chip" to={`/reports/${r._id}`}>Open</Link>
                   </div>
-                  <Link className="chip" to={`/reports/${r._id}`}>Open</Link>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

@@ -3,11 +3,12 @@ import { useParams, Link } from 'react-router-dom';
 import { apiFetch, ApiError } from '../api.js';
 import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
+import CitationCard from '../components/CitationCard.jsx';
 
-// The new Diff page. The pipeline now decides what's a real change via the
-// LLM and attaches the passages the LLM grounded its answer in. We just
-// render those passages as two side-by-side panels, one per filing year,
-// with the LLM's one-sentence summary as the headline.
+// One finding = one LLM-identified change in a section, with up to two
+// citations: PREV (marker 1) and CURR (marker 2). We render the summary on
+// top and the citations side by side so the analyst can see the grounding
+// without scrolling.
 export default function Diff() {
   const { id: comparisonId, findingId } = useParams();
   const toast = useToast();
@@ -45,9 +46,8 @@ export default function Diff() {
 
   if (!data) return null;
   const citations = data.citations ?? [];
-  const byYear = {};
-  for (const c of citations) (byYear[c.filingYear] ||= []).push(c);
-  const years = Object.keys(byYear).map(Number).sort((a, b) => a - b); // older first
+  const prev = citations.find((c) => c.marker === 1);
+  const curr = citations.find((c) => c.marker === 2);
 
   return (
     <div className="screen">
@@ -67,25 +67,27 @@ export default function Diff() {
           <Link className="button ghost" to={`/analyses/${comparisonId}`}>← Back to results</Link>
         </div>
 
-        <div className="two-col">
-          {years.map((year) => (
-            <div key={year} className="panel">
-              <div className="panel-head">
-                <div>
-                  <h3 className="panel-title">FY{year} filing</h3>
-                  <p className="panel-sub">{byYear[year].length} cited passage{byYear[year].length === 1 ? '' : 's'}</p>
-                </div>
-              </div>
-              <div style={{ padding: '0 40px 32px', display: 'grid', gap: 14 }}>
-                {byYear[year].map((c, i) => (
-                  <div key={i} style={{ padding: 18, background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: 16 }}>
-                    <div className="row-sub" style={{ marginBottom: 8 }}>Page {c.page}</div>
-                    <p style={{ margin: 0, fontSize: 14, lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>{c.excerpt}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
+        <div className="citation-pair">
+          {prev ? (
+            <CitationCard
+              citation={prev}
+              marker={1}
+              label="Previous"
+              id="citation-1"
+            />
+          ) : (
+            <div className="citation-card dim"><p className="citation-empty">Newly disclosed — no prior-year passage.</p></div>
+          )}
+          {curr ? (
+            <CitationCard
+              citation={curr}
+              marker={2}
+              label="Current"
+              id="citation-2"
+            />
+          ) : (
+            <div className="citation-card dim"><p className="citation-empty">No longer disclosed in the current filing.</p></div>
+          )}
         </div>
       </div>
     </div>

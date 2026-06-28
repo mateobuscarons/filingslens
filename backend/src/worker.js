@@ -3,42 +3,25 @@ import { Filing } from './models/filing.js';
 import { Finding } from './models/finding.js';
 import { Citation } from './models/citation.js';
 import { Paragraph } from './models/paragraph.js';
-import { normalize } from './ai/vec.js';
-import {
-  buildIndex,
-  findBestMatch,
-  findTopK,
-  isUsefulParagraph,
-  scoreModified,
-  impactBucket,
-  judgeCandidate,
-  runPool,
-  COMPARE_CONSTANTS,
-} from './ai/compare.js';
+import { findCandidatePairs, judgeAllPairs } from './ai/compare.js';
 
-async function setStatus(comparison, status, extra = {}) {
-  comparison.status = status;
-  Object.assign(comparison, extra);
-  await comparison.save();
+const IMPACT_SCORE = { high: 0.9, medium: 0.6, low: 0.3 };
+
+async function setStatus(id, status, extra = {}) {
+  await FilingComparison.updateOne({ _id: id }, { status, ...extra });
 }
 
-// Public entry point. Driven by POST /comparisons via setImmediate.
-//
-// Pipeline:
-//   1. Load both filings, filter usable paragraphs.
-//   2. Build cosine indexes for BOTH filings.
-//   3. Match each current paragraph to its best previous; keep pairs whose
-//      similarity is in [MATCH_THRESHOLD, SIMILAR_THRESHOLD] as candidates.
-//   4. Score materiality; take top TOP_CANDIDATES = 15.
-//   5. For each candidate: fetch RAG_CONTEXT_K = 3 nearest passages from
-//      each filing; LLM judges + summarizes (or refuses with not_a_change).
-//   6. Persist confirmed findings + their cited passages as Citations.
+// One run = one LLM call.
+//   1. Cosine-pair every current paragraph with its closest previous.
+//   2. Keep the 20 best candidate pairs (similar enough to compare, not identical).
+//   3. Judge them in one shot with strict JSON; resolve quoted spans.
+//   4. Persist Findings + Citations.
 export async function runComparison(comparisonId) {
-  const comparison = await FilingComparison.findById(comparisonId);
-  if (!comparison) return;
-
   try {
-    await setStatus(comparison, 'comparing', { progress: 0.05 });
+    await setStatus(comparisonId, 'comparing', { progress: 0.05 });
+
+    const comparison = await FilingComparison.findById(comparisonId).lean();
+    if (!comparison) return;
 
     const [currFiling, prevFiling] = await Promise.all([
       Filing.findById(comparison.currentFilingId).lean(),
@@ -49,116 +32,73 @@ export async function runComparison(comparisonId) {
       Paragraph.find({ filingId: comparison.currentFilingId }).lean(),
       Paragraph.find({ filingId: comparison.previousFilingId }).lean(),
     ]);
-
-    const currParas = currAll.filter(isUsefulParagraph);
-    const prevParas = prevAll.filter(isUsefulParagraph);
-    if (!currParas.length || !prevParas.length) {
-      throw new Error('One of the filings has no usable paragraphs');
+    if (!currAll.length || !prevAll.length) {
+      throw new Error('One of the filings has no paragraphs');
     }
 
-    const prevIndex = buildIndex(prevParas);
-    const currIndex = buildIndex(currParas);
+    const pairs = findCandidatePairs(prevAll, currAll);
+    await setStatus(comparisonId, 'summarizing', { progress: 0.4 });
 
-    // Stage 1: candidate matches (modified pairs only)
-    const candidates = [];
-    for (const curr of currParas) {
-      const q = normalize(curr.embedding);
-      const { index, similarity } = findBestMatch(q, prevIndex);
-      if (similarity > COMPARE_CONSTANTS.SIMILAR_THRESHOLD) continue;     // unchanged
-      if (similarity < COMPARE_CONSTANTS.MATCH_THRESHOLD) continue;        // added — not surfaced in new pipeline
-      const prev = prevParas[index];
-      candidates.push({
-        section: curr.section,
-        currParagraph: curr,
-        prevParagraph: prev,
-        similarity,
-        materialityScore: scoreModified(prev, curr),
-      });
-    }
-    candidates.sort((a, b) => b.materialityScore - a.materialityScore);
-    const top = candidates.slice(0, COMPARE_CONSTANTS.TOP_CANDIDATES);
-
-    await setStatus(comparison, 'summarizing', { progress: 0.4 });
-
-    // Stage 2 + 3: RAG context + LLM judge (in parallel)
-    const confirmed = [];
-    await runPool(top, COMPARE_CONSTANTS.JUDGE_CONCURRENCY, async (cand) => {
-      const queryVec = normalize(cand.currParagraph.embedding);
-      const prevContext = findTopK(queryVec, prevIndex, COMPARE_CONSTANTS.RAG_CONTEXT_K, [cand.prevParagraph._id]);
-      const currContext = findTopK(queryVec, currIndex, COMPARE_CONSTANTS.RAG_CONTEXT_K, [cand.currParagraph._id]);
-      try {
-        const verdict = await judgeCandidate(
-          {
-            prevParagraph: cand.prevParagraph,
-            currParagraph: cand.currParagraph,
-            prevFilingYear: prevFiling.fiscalYear,
-            currFilingYear: currFiling.fiscalYear,
-          },
-          prevContext,
-          currContext,
-        );
-        if (verdict.verdict !== 'change' || !verdict.summary) return;
-        // judgeCandidate attaches _prevList = [candidate, ...prevContext]
-        // and _currList = [candidate, ...currContext], so cites_* index 1
-        // resolves to the candidate paragraph itself.
-        const citedPrev = (verdict.cites_prev ?? []).map((i) => verdict._prevList?.[i - 1]).filter(Boolean);
-        const citedCurr = (verdict.cites_curr ?? []).map((i) => verdict._currList?.[i - 1]).filter(Boolean);
-        if (citedPrev.length === 0 || citedCurr.length === 0) return;
-        confirmed.push({ ...cand, summary: verdict.summary.trim(), citedPrev, citedCurr });
-      } catch (err) {
-        console.warn(`[judge] candidate failed: ${err.message}`);
-      }
+    const changes = await judgeAllPairs(pairs, {
+      prevYear: prevFiling.fiscalYear,
+      currYear: currFiling.fiscalYear,
     });
 
-    // Stage 4: persist
-    const findingDocs = confirmed.map((c) => ({
-      comparisonId: comparison._id,
-      type: 'modified',
-      section: c.section,
-      currentParagraphId: c.currParagraph._id,
-      previousParagraphId: c.prevParagraph._id,
-      similarity: c.similarity,
-      materialityScore: c.materialityScore,
-      impact: impactBucket(c.materialityScore),
+    const findingDocs = changes.map((c) => ({
+      comparisonId,
+      type: !c.prev ? 'added' : !c.curr ? 'removed' : 'modified',
+      // The LLM-provided topic ("Board compensation", "Pension provisions")
+      // beats the raw PDF section label, which the heading regex often
+      // mis-captures from table headers like "30. Sep. 30. Sep.".
+      section: c.topic,
+      currentParagraphId: c.curr?.paragraph._id ?? c.pair.curr._id,
+      previousParagraphId: c.prev?.paragraph._id ?? c.pair.prev._id,
+      materialityScore: IMPACT_SCORE[c.impact] ?? 0.5,
+      impact: c.impact,
       summary: c.summary,
-      excerpt: c.currParagraph.text,
-      diff: [],
+      excerpt: c.pair.curr.text,
     }));
+
     const inserted = findingDocs.length ? await Finding.insertMany(findingDocs) : [];
 
     const citationDocs = [];
     for (let i = 0; i < inserted.length; i++) {
       const finding = inserted[i];
-      const c = confirmed[i];
-      for (const p of c.citedPrev) {
-        citationDocs.push(buildCitation(finding._id, p, prevFiling));
-      }
-      for (const p of c.citedCurr) {
-        citationDocs.push(buildCitation(finding._id, p, currFiling));
-      }
+      const c = changes[i];
+      if (c.prev) citationDocs.push(buildCitation(finding._id, c.prev, prevFiling, 1));
+      if (c.curr) citationDocs.push(buildCitation(finding._id, c.curr, currFiling, c.prev ? 2 : 1));
     }
     if (citationDocs.length) await Citation.insertMany(citationDocs);
 
-    await setStatus(comparison, 'completed', {
+    const counts = inserted.reduce(
+      (acc, f) => { acc[f.type] = (acc[f.type] || 0) + 1; return acc; },
+      { modified: 0, added: 0, removed: 0 }
+    );
+
+    await setStatus(comparisonId, 'completed', {
       progress: 1,
-      counts: { modified: inserted.length, added: 0, removed: 0 },
-      overallScore: average(confirmed.map((c) => c.materialityScore)),
+      counts,
+      overallScore: average(inserted.map((f) => f.materialityScore)),
     });
   } catch (err) {
     console.error('[worker] comparison failed', err);
-    await setStatus(comparison, 'failed', { error: err.message });
+    await setStatus(comparisonId, 'failed', { error: err.message });
   }
 }
 
-function buildCitation(findingId, paragraph, filing) {
+function buildCitation(findingId, hit, filing, marker) {
   return {
     sourceType: 'Finding',
     sourceId: findingId,
-    paragraphId: paragraph._id,
+    paragraphId: hit.paragraph._id,
     filingId: filing._id,
     filingYear: filing.fiscalYear,
-    page: paragraph.page,
-    excerpt: paragraph.text.slice(0, 320),
+    page: hit.paragraph.page,
+    excerpt: hit.paragraph.text,
+    claimText: hit.claimText,
+    charStart: hit.charStart,
+    charEnd: hit.charEnd,
+    marker,
   };
 }
 
