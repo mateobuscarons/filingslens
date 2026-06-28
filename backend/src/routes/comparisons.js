@@ -7,6 +7,8 @@ import { Filing } from '../models/filing.js';
 import { Finding } from '../models/finding.js';
 import { Citation } from '../models/citation.js';
 import { runComparison } from '../worker.js';
+import { User } from '../models/user.js';
+import { sendComparisonShared } from '../email.js';
 
 const router = Router();
 
@@ -136,6 +138,17 @@ async function setShared(req, res, isShared) {
   comparison.isShared = isShared;
   if (isShared && !comparison.firmId) comparison.firmId = req.user.firmId;
   await comparison.save();
+
+  if (isShared && req.user.firmId) {
+    User.find({ firmId: req.user.firmId, _id: { $ne: req.user._id } })
+      .select('name email')
+      .then(members => sendComparisonShared({
+        comparisonTitle: comparison.title || 'an analysis',
+        sharedByName: req.user.name,
+        firmMembers: members,
+      }));
+  }
+
   res.json(comparison);
 }
 router.post('/:id/share', requireAuth, (req, res) => setShared(req, res, true));

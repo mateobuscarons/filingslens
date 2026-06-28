@@ -1,18 +1,20 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
-import { sendReportShared } from '../email.js';
+import { sendReportShared, sendMentionNotification } from '../email.js';
 import { validate } from '../middleware/validate.js';
 import { ResearchReport, ReportItem } from '../models/report.js';
 import { Finding } from '../models/finding.js';
 import { Question } from '../models/qa.js';
 import { Citation } from '../models/citation.js';
+import { User } from '../models/user.js';
 
 const router = Router();
 
-// Read = owner OR firm-mate on a shared report.
+// Read = owner OR specifically shared with user OR all-firm share.
 function canRead(user, report) {
   if (report.userId.equals(user._id)) return true;
+  if (report.sharedWith?.some(id => id.equals(user._id))) return true;
   return Boolean(report.isShared && user.firmId && report.firmId?.equals(user.firmId));
 }
 // Edit (items + notes) = owner OR firm-mate on a shared report.
@@ -51,7 +53,7 @@ async function ownedReport(req, res) {
 }
 
 router.get('/', requireAuth, async (req, res) => {
-  const orClauses = [{ userId: req.user._id }];
+  const orClauses = [{ userId: req.user._id }, { sharedWith: req.user._id }];
   if (req.user.firmId) orClauses.push({ firmId: req.user.firmId, isShared: true });
   const reports = await ResearchReport.find({ $or: orClauses })
     .sort({ updatedAt: -1 })
@@ -215,13 +217,28 @@ router.post('/:id/items/:itemId/notes', requireAuth, validate(noteSchema), async
     if (!report) return;
     const item = await ReportItem.findOne({ _id: req.params.itemId, reportId: report._id });
     if (!item) return res.status(404).json({ error: 'NOT_FOUND', message: 'Item not found' });
-    item.notes.push({
-      authorId: req.user._id,
-      authorName: req.user.name,
-      text: req.body.text.trim(),
-    });
+    const noteText = req.body.text.trim();
+    item.notes.push({ authorId: req.user._id, authorName: req.user.name, text: noteText });
     await item.save();
-    res.status(201).json(item.notes[item.notes.length - 1]);
+    const saved = item.notes[item.notes.length - 1];
+    res.status(201).json(saved);
+
+    // Fire-and-forget: notify @mentioned members who have access to this report
+    const mentions = [...noteText.matchAll(/@(\w+)/g)].map(m => m[1].toLowerCase());
+    if (mentions.length) {
+      const visibleIds = report.isShared
+        ? null // all firm members
+        : report.sharedWith;
+      const query = visibleIds
+        ? { _id: { $in: visibleIds, $ne: req.user._id } }
+        : { firmId: req.user.firmId, _id: { $ne: req.user._id } };
+      User.find(query).select('name email').then(members => {
+        const tagged = members.filter(m => mentions.some(mn => m.name.toLowerCase().startsWith(mn)));
+        for (const m of tagged) {
+          sendMentionNotification({ toName: m.name, toEmail: m.email, byName: req.user.name, reportId: report._id });
+        }
+      });
+    }
   } catch (err) {
     next(err);
   }
@@ -244,33 +261,50 @@ router.delete('/:id/items/:itemId/notes/:noteId', requireAuth, async (req, res) 
 });
 
 // ---- Share -----------------------------------------------------------------
+// POST /reports/:id/share  { all: true }           → share with whole firm
+// POST /reports/:id/share  { userIds: ['id',...] } → share with specific members
+// DELETE /reports/:id/share                         → unshare completely
 
-async function setShared(req, res, isShared) {
-  const report = await ownedReport(req, res);
-  if (!report) return;
-  if (isShared && !req.user.firmId) {
-    return res.status(400).json({
-      error: 'VALIDATION',
-      message: 'Solo accounts cannot share reports',
-      fields: { isShared: 'Requires a firm workspace' },
-    });
-  }
-  report.isShared = isShared;
-  await report.save();
+router.post('/:id/share', requireAuth, async (req, res, next) => {
+  try {
+    const report = await ownedReport(req, res);
+    if (!report) return;
+    if (!req.user.firmId) {
+      return res.status(400).json({ error: 'VALIDATION', message: 'Solo accounts cannot share reports' });
+    }
+    const { all, userIds } = req.body;
+    if (all) {
+      report.isShared = true;
+      report.sharedWith = [];
+    } else if (Array.isArray(userIds)) {
+      report.isShared = false;
+      report.sharedWith = userIds;
+    } else {
+      return res.status(400).json({ error: 'VALIDATION', message: 'Provide all:true or userIds:[]' });
+    }
+    await report.save();
 
-  if (isShared && req.user.firmId) {
-    User.find({ firmId: req.user.firmId, _id: { $ne: req.user._id } })
-      .select('name email')
-      .then(members => sendReportShared({
-        reportTitle: report.title,
-        sharedByName: req.user.name,
-        firmMembers: members,
-      }));
-  }
+    // Notify newly added recipients
+    const recipientIds = all
+      ? await User.find({ firmId: req.user.firmId, _id: { $ne: req.user._id } }).select('name email')
+      : await User.find({ _id: { $in: userIds }, firmId: req.user.firmId }).select('name email');
+    if (recipientIds.length) {
+      sendReportShared({ reportTitle: report.title, sharedByName: req.user.name, firmMembers: recipientIds });
+    }
 
-  res.json(report);
-}
-router.post('/:id/share', requireAuth, (req, res) => setShared(req, res, true));
-router.delete('/:id/share', requireAuth, (req, res) => setShared(req, res, false));
+    res.json(report);
+  } catch (err) { next(err); }
+});
+
+router.delete('/:id/share', requireAuth, async (req, res, next) => {
+  try {
+    const report = await ownedReport(req, res);
+    if (!report) return;
+    report.isShared = false;
+    report.sharedWith = [];
+    await report.save();
+    res.json(report);
+  } catch (err) { next(err); }
+});
 
 export default router;

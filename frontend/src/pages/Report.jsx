@@ -41,6 +41,7 @@ export default function Report() {
 
   const [report, setReport] = useState(null);
   const [items, setItems] = useState([]);
+  const [members, setMembers] = useState([]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState('');
   const [loading, setLoading] = useState(true);
@@ -50,6 +51,11 @@ export default function Report() {
       setReport(data.report);
       setTitle(data.report.title);
       setItems(data.items);
+      if (user?.firmId) {
+        apiFetch(`/firms/${user.firmId}/members`)
+          .then(m => setMembers(m.filter(mb => mb._id !== user.id)))
+          .catch(() => {});
+      }
     }).finally(() => setLoading(false));
   }, [id]);
 
@@ -74,13 +80,23 @@ export default function Report() {
     } catch { toast.error('Could not remove item.'); }
   }
 
-  async function toggleShare() {
+  async function applyShare(all, userIds) {
     try {
-      const method = report.isShared ? 'DELETE' : 'POST';
-      const updated = await apiFetch(`/reports/${id}/share`, { method });
+      const updated = await apiFetch(`/reports/${id}/share`, {
+        method: 'POST',
+        body: JSON.stringify(all ? { all: true } : { userIds }),
+      });
       setReport((prev) => ({ ...prev, ...updated }));
-      toast.success(updated.isShared ? 'Shared with firm.' : 'Unshared.');
-    } catch (err) { toast.error(err instanceof ApiError ? err.message : 'Could not update sharing.'); }
+      toast.success(all ? 'Shared with everyone.' : userIds.length === 0 ? 'Unshared.' : `Shared with ${userIds.length} member(s).`);
+    } catch (err) { toast.error(err instanceof ApiError ? err.message : 'Could not share.'); }
+  }
+
+  async function unshare() {
+    try {
+      const updated = await apiFetch(`/reports/${id}/share`, { method: 'DELETE' });
+      setReport((prev) => ({ ...prev, ...updated }));
+      toast.success('Unshared.');
+    } catch (err) { toast.error(err instanceof ApiError ? err.message : 'Could not unshare.'); }
   }
 
   async function addNote(itemId, text) {
@@ -119,7 +135,9 @@ export default function Report() {
             report={report} title={title} setTitle={setTitle}
             editingTitle={editingTitle} setEditingTitle={setEditingTitle}
             saveTitle={saveTitle} isOwner={isOwner} user={user}
-            toggleShare={toggleShare}
+            members={members}
+            onShare={applyShare}
+            onUnshare={unshare}
             onDownload={() => downloadPdf(report, items)}
           />
 
@@ -133,6 +151,7 @@ export default function Report() {
                 item={item}
                 currentUserId={user?.id}
                 canEdit={canEdit}
+                members={members}
                 onDelete={() => deleteItem(item._id)}
                 onAddNote={(text) => addNote(item._id, text)}
                 onRemoveNote={(noteId) => removeNote(item._id, noteId)}
@@ -155,7 +174,33 @@ export default function Report() {
 
 // ---------- Header (title + share + download) -----------------------------
 
-function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, saveTitle, isOwner, user, toggleShare, onDownload }) {
+function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, saveTitle, isOwner, user, members, onShare, onUnshare, onDownload }) {
+  const [showPicker, setShowPicker] = useState(false);
+  const [selected, setSelected] = useState(report.sharedWith ?? []);
+  const pickerRef = React.useRef(null);
+
+  React.useEffect(() => {
+    function handleClick(e) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target)) setShowPicker(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  function toggleMember(id) {
+    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  }
+
+  function applyShare(all) {
+    onShare(all, selected);
+    setShowPicker(false);
+  }
+
+  const isSharedPartially = !report.isShared && report.sharedWith?.length > 0;
+  const sharedLabel = report.isShared ? 'Shared with everyone'
+    : isSharedPartially ? `Shared with ${report.sharedWith.length} member(s)`
+    : 'Draft';
+
   return (
     <>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 24 }}>
@@ -181,26 +226,65 @@ function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, 
           </h3>
         )}
         {!editingTitle && (
-          <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 10, flexShrink: 0, position: 'relative' }} ref={pickerRef}>
             <button className="button ghost" onClick={onDownload} style={{ minHeight: 38, padding: '0 16px', fontSize: 13 }}>
               Download PDF
             </button>
             {isOwner && user?.firmId && (
-              <button
-                className={`button ${report.isShared ? 'ghost' : 'accent'}`}
-                onClick={toggleShare}
-                style={{ minHeight: 38, padding: '0 16px', fontSize: 13 }}
-              >
-                {report.isShared ? 'Unshare' : 'Share with firm'}
-              </button>
+              <>
+                {(report.isShared || isSharedPartially) && (
+                  <button className="button ghost" onClick={onUnshare} style={{ minHeight: 38, padding: '0 16px', fontSize: 13 }}>
+                    Unshare all
+                  </button>
+                )}
+                <button
+                  className="button accent"
+                  onClick={() => setShowPicker(s => !s)}
+                  style={{ minHeight: 38, padding: '0 16px', fontSize: 13 }}
+                >
+                  Share ▾
+                </button>
+                {showPicker && (
+                  <div style={{
+                    position: 'absolute', top: 46, right: 0, background: 'white',
+                    border: '1px solid var(--line)', borderRadius: 14,
+                    boxShadow: '0 8px 32px rgba(0,0,0,0.10)', minWidth: 220, zIndex: 20, padding: '8px 0',
+                  }}>
+                    <div
+                      onClick={() => applyShare(true)}
+                      style={{ padding: '9px 18px', fontSize: 13, fontWeight: 750, cursor: 'pointer', color: 'var(--ink)', borderBottom: '1px solid var(--line)', marginBottom: 4 }}
+                      onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'white'}
+                    >
+                      Everyone in firm
+                    </div>
+                    {members.map(m => (
+                      <div
+                        key={m._id}
+                        onClick={() => toggleMember(m._id)}
+                        style={{ padding: '9px 18px', fontSize: 13, fontWeight: 750, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 10 }}
+                        onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
+                        onMouseLeave={e => e.currentTarget.style.background = 'white'}
+                      >
+                        <span style={{ width: 16, height: 16, borderRadius: 4, border: '2px solid var(--accent)', background: selected.includes(m._id) ? 'var(--accent)' : 'white', display: 'inline-block', flexShrink: 0 }} />
+                        {m.name}
+                      </div>
+                    ))}
+                    <div style={{ padding: '8px 18px', borderTop: '1px solid var(--line)', marginTop: 4 }}>
+                      <button className="button accent" style={{ width: '100%', fontSize: 13 }} onClick={() => applyShare(false)}>
+                        {selected.length === 0 ? 'Remove all access' : `Share with ${selected.length} member(s)`}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
       </div>
 
       <p className="panel-sub">
-        {report.isShared ? 'Shared with firm · ' : 'Draft · '}
-        {new Date(report.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+        {sharedLabel} · {new Date(report.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
         {report.userId?.name ? ` · by ${report.userId.name}` : ''}
       </p>
     </>
@@ -209,7 +293,7 @@ function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, 
 
 // ---------- Item display --------------------------------------------------
 
-function ItemCard({ item, currentUserId, canEdit, onDelete, onAddNote, onRemoveNote }) {
+function ItemCard({ item, currentUserId, canEdit, members, onDelete, onAddNote, onRemoveNote }) {
   return (
     <div className="report-item">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
@@ -236,6 +320,7 @@ function ItemCard({ item, currentUserId, canEdit, onDelete, onAddNote, onRemoveN
         notes={item.notes ?? []}
         currentUserId={currentUserId}
         canAdd={canEdit}
+        members={members}
         onAdd={onAddNote}
         onRemove={onRemoveNote}
       />
@@ -251,9 +336,49 @@ function ItemCard({ item, currentUserId, canEdit, onDelete, onAddNote, onRemoveN
   );
 }
 
-function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
+function renderNoteText(text) {
+  const parts = text.split(/(@\S+)/g);
+  return parts.map((part, i) =>
+    part.startsWith('@')
+      ? <span key={i} style={{ color: 'var(--accent)', fontWeight: 700 }}>{part}</span>
+      : part
+  );
+}
+
+function NotesPanel({ notes, currentUserId, canAdd, members = [], onAdd, onRemove }) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState(null);
+  const [mentionAt, setMentionAt] = useState(0);
+  const textareaRef = React.useRef(null);
+
+  function handleChange(e) {
+    const val = e.target.value;
+    setText(val);
+    const cursor = e.target.selectionStart;
+    const before = val.slice(0, cursor);
+    const match = before.match(/@(\w*)$/);
+    if (match && members.length > 0) {
+      setMentionQuery(match[1].toLowerCase());
+      setMentionAt(cursor - match[0].length);
+    } else {
+      setMentionQuery(null);
+    }
+  }
+
+  function pickMember(member) {
+    const before = text.slice(0, mentionAt);
+    const after = text.slice(mentionAt + 1 + (mentionQuery?.length ?? 0));
+    const newText = before + '@' + member.name + ' ' + after;
+    setText(newText);
+    setMentionQuery(null);
+    textareaRef.current?.focus();
+  }
+
+  const allOption = mentionQuery !== null && 'all'.startsWith(mentionQuery) ? [{ _id: '__all__', name: 'all' }] : [];
+  const suggestions = mentionQuery !== null
+    ? [...allOption, ...members.filter(m => m.name.toLowerCase().startsWith(mentionQuery))].slice(0, 6)
+    : [];
 
   async function submit(e) {
     e?.preventDefault?.();
@@ -264,7 +389,6 @@ function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
       await onAdd(value);
       setText('');
     } catch (err) {
-      // surface gently — the row stays so the user can retry
       console.error(err);
     } finally {
       setSubmitting(false);
@@ -293,18 +417,39 @@ function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
               </button>
             )}
           </div>
-          <p className="note-text">{n.text}</p>
+          <p className="note-text">{renderNoteText(n.text)}</p>
         </div>
       ))}
 
       {canAdd && (
-        <form className="note-compose" onSubmit={submit}>
+        <form className="note-compose" onSubmit={submit} style={{ position: 'relative' }}>
+          {suggestions.length > 0 && (
+            <div style={{
+              position: 'absolute', bottom: '100%', left: 0,
+              background: 'white', border: '1px solid var(--line)', borderRadius: 10,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.10)', zIndex: 10, minWidth: 180, marginBottom: 4,
+            }}>
+              {suggestions.map(m => (
+                <div
+                  key={m._id}
+                  onClick={() => pickMember(m)}
+                  style={{ padding: '8px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer', color: 'var(--ink)' }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
+                  onMouseLeave={e => e.currentTarget.style.background = 'white'}
+                >
+                  @{m.name}
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
+            ref={textareaRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Add a note for the team…"
+            onChange={handleChange}
+            placeholder="Add a note… type @ to mention a team member"
             rows={2}
             onKeyDown={(e) => {
+              if (e.key === 'Escape') setMentionQuery(null);
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(e);
             }}
           />
