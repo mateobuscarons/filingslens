@@ -27,6 +27,23 @@ router.get('/:id', requireAuth, async (req, res) => {
   res.json(filing);
 });
 
+// Stream the original uploaded PDF inline so the browser's native viewer
+// can render it. Citations link here with #page=N to jump to the cited page.
+router.get('/:id/file', requireAuth, async (req, res) => {
+  const filing = await Filing.findById(req.params.id);
+  if (!filing || !filing.fileName) {
+    return res.status(404).json({ error: 'NOT_FOUND', message: 'Filing not found' });
+  }
+  const filePath = path.join(UPLOAD_DIR, filing.fileName);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="FY${filing.fiscalYear}.pdf"`);
+  res.sendFile(filePath, (err) => {
+    if (err && !res.headersSent) {
+      res.status(500).json({ error: 'FILE_READ', message: err.message });
+    }
+  });
+});
+
 const uploadSchema = z.object({
   companyName: z.string().min(2).max(120),
   fiscalYear: z.coerce.number().int().min(2000).max(2099),

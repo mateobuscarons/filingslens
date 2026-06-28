@@ -8,7 +8,7 @@ const comparisonSchema = new mongoose.Schema(
     previousFilingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Filing', required: true },
     status: {
       type: String,
-      enum: ['pending', 'comparing', 'ranking', 'summarizing', 'completed', 'failed'],
+      enum: ['pending', 'comparing', 'summarizing', 'completed', 'failed'],
       default: 'pending',
     },
     progress: { type: Number, default: 0 },

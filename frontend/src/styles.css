@@ -152,14 +152,72 @@ h2 { font-size: clamp(40px, 4.5vw, 64px); }
 .question { margin-top: 30px; padding: 21px 26px; background: var(--dark-soft); border-radius: 999px; font-weight: 750; }
 .answer { margin-top: 24px; padding: 28px; background: white; color: var(--ink); border-radius: 24px; line-height: 1.5; }
 
-/* ── Citations ── */
-.citation-quote {
-  padding: 18px 20px; background: var(--accent-soft);
-  border-radius: 18px; font-size: 14px; line-height: 1.5;
-  font-style: italic; color: var(--ink);
+/* ── Citation card + inline marker ── */
+.citation-card {
+  padding: 22px 24px; background: var(--bg);
+  border: 1px solid var(--line); border-radius: 22px;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
-.citation-meta { display: block; margin-top: 8px; font-size: 12px; font-weight: 800; color: var(--green); }
-a.citation-meta { text-decoration: underline; text-underline-offset: 3px; }
+.citation-card.dim { opacity: 0.6; }
+.citation-card.pulse {
+  animation: citation-pulse 1.2s ease;
+  box-shadow: 0 0 0 3px var(--accent);
+}
+@keyframes citation-pulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent); }
+  30%  { box-shadow: 0 0 0 5px var(--accent); }
+  100% { box-shadow: 0 0 0 0 var(--accent); }
+}
+.citation-card-head {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 12px;
+}
+.citation-marker {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 30px; height: 26px; padding: 0 8px;
+  background: var(--ink); color: white;
+  border-radius: 8px; font-size: 12px; font-weight: 880;
+}
+.citation-card-meta {
+  font-size: 12px; font-weight: 800; color: var(--green);
+  text-transform: uppercase; letter-spacing: 0.4px;
+}
+.citation-excerpt {
+  margin: 0; font-size: 14px; line-height: 1.6; color: var(--ink);
+  white-space: pre-wrap;
+}
+.citation-empty {
+  margin: 0; color: var(--muted); font-style: italic; font-size: 14px;
+}
+.citation-highlight {
+  background: var(--accent); color: var(--ink);
+  padding: 1px 3px; border-radius: 4px; font-weight: 750;
+}
+.citation-pdf-link {
+  display: inline-block; margin-top: 12px;
+  font-size: 12px; font-weight: 800; color: var(--green);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.citation-pdf-link:hover { color: var(--ink); }
+.citation-stack { display: grid; gap: 18px; margin-top: 24px; }
+.citation-pair {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+}
+@media (max-width: 980px) {
+  .citation-pair { grid-template-columns: 1fr; }
+}
+
+/* ── Inline `[N]` marker inside answer text ── */
+.citation-inline {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 26px; height: 22px; padding: 0 6px; margin: 0 2px;
+  background: var(--accent-soft); color: var(--ink);
+  border: 1px solid var(--accent); border-radius: 6px;
+  font-size: 12px; font-weight: 880; font-family: inherit;
+  cursor: pointer; vertical-align: baseline;
+}
+.citation-inline:hover { background: var(--accent); }
 
 /* ── Report layout ── */
 .report-layout { display: grid; grid-template-columns: minmax(0, 820px) minmax(320px, 380px); gap: 34px; align-items: stretch; }
@@ -171,21 +229,6 @@ a.citation-meta { text-decoration: underline; text-underline-offset: 3px; }
 .persona-card { padding: 34px; border-radius: 34px; background: var(--surface); border: 1px solid var(--line); }
 .persona-card.dark { background: var(--dark); border-color: transparent; color: white; }
 .persona-card.dark .panel-sub { color: #c6d1ca; }
-
-/* ── Diff view ── */
-.diff-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(280px, 360px); gap: 24px; align-items: stretch; }
-.diff-pane, .diff-side { padding: 30px; border-radius: 34px; background: var(--surface); border: 1px solid var(--line); }
-.diff-side { background: var(--dark); color: white; border: 0; }
-.diff-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
-.diff-copy { display: grid; gap: 12px; color: var(--ink); font-size: 15px; line-height: 1.48; }
-.diff-line { padding: 13px 14px; border-radius: 14px; background: var(--bg); }
-.diff-line.removed { background: var(--red-soft); color: var(--red); }
-.diff-line.added { background: var(--accent-soft); color: var(--ink); }
-.diff-flow { margin: 0; color: var(--ink); font-size: 15px; line-height: 1.6; white-space: pre-wrap; }
-.diff-rem { background: var(--red-soft); color: var(--red); padding: 0 4px; border-radius: 4px; text-decoration: line-through; }
-.diff-add { background: var(--accent-soft); color: var(--ink); padding: 0 4px; border-radius: 4px; }
-.diff-side .panel-sub { color: #c6d1ca; }
-.diff-actions { display: grid; gap: 12px; margin-top: 30px; }
 
 /* ── Login ── */
 .login-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 460px); gap: 56px; align-items: center; max-width: 1320px; margin: 0 auto; }
@@ -236,7 +279,6 @@ a.citation-meta { text-decoration: underline; text-underline-offset: 3px; }
   .evidence-grid,
   .report-layout,
   .persona-bar,
-  .diff-grid,
   .login-grid { grid-template-columns: 1fr; }
   .metric-strip,
   .filing-pair { grid-template-columns: 1fr; }

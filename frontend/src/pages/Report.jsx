@@ -19,6 +19,12 @@ function impactChipClass(impact) {
   return 'chip';
 }
 
+function findingTypeLabel(type) {
+  if (type === 'added') return 'Newly disclosed';
+  if (type === 'removed') return 'No longer disclosed';
+  return 'Modified';
+}
+
 export default function Report() {
   const { id } = useParams();
   const { user } = useAuth();
@@ -246,7 +252,7 @@ function FindingBody({ item }) {
     <>
       <div className="row-title">{t.summary || t.excerpt?.slice(0, 120) || 'Finding'}</div>
       <div className="row-sub" style={{ marginTop: 4 }}>
-        Finding · {t.section ?? '—'} · {t.type} · materiality {t.materialityScore?.toFixed(2) ?? '—'}
+        Finding · {t.section ?? '—'} · {findingTypeLabel(t.type)}
       </div>
       {t.excerpt && (
         <p style={{ marginTop: 12, fontSize: 14, lineHeight: 1.5, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>
@@ -325,7 +331,7 @@ function downloadPdf(report, items) {
 
     if (item.kind === 'finding') {
       if (t.summary) writeLines(t.summary, { size: 12 });
-      if (t.section) writeLines(`Section: ${t.section} · ${t.type} · materiality ${t.materialityScore?.toFixed(2) ?? '—'}`, { size: 9, color: [110, 110, 110] });
+      if (t.section) writeLines(`Topic: ${t.section} · ${findingTypeLabel(t.type)}`, { size: 9, color: [110, 110, 110] });
       if (t.excerpt) { y += 4; writeLines(t.excerpt, { size: 10 }); }
     } else {
       if (t.text) writeLines(`Q: ${t.text}`, { size: 12 });

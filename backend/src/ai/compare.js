@@ -1,200 +1,133 @@
 import { chat } from './llm.js';
 import { normalize, dot } from './vec.js';
+import { resolveQuote } from './quoteResolver.js';
 
-// ─── Tunables ─────────────────────────────────────────────────────────────
+// Lean comparison: ONE LLM call per analysis.
 //
-// Pipeline outline:
-//   1. Filter paragraphs that are too short / table-fragment.
-//   2. Cosine-match each current paragraph to its best previous; classify
-//      as unchanged / modified by similarity thresholds.
-//   3. Rank "modified" pairs by materiality (heuristic) and take top 15.
-//   4. For each top candidate: pull a few "RAG" context passages from each
-//      filing (most semantically similar to the candidate), then ask the
-//      LLM to either describe the change OR refuse with `not_a_change`.
-//      Citations come from the passages the LLM picked.
+//   1. For each current paragraph, find its closest previous paragraph by
+//      cosine. Keep pairs in the [0.65, 0.95] band — close enough to be
+//      "the same passage with edits", not identical, not unrelated.
+//   2. Sort by similarity DESC (boilerplate-with-one-number-changed first —
+//      that's where the material changes hide).
+//   3. Send the top 20 pairs to the judge in one shot. It returns up to 10
+//      grounded changes with verbatim quotes from both sides.
+//   4. Resolve quotes to paragraph spans for citation.
 
-const SIMILAR_THRESHOLD = 0.95;   // above this = paragraph unchanged
-const MATCH_THRESHOLD   = 0.65;   // between MATCH and SIMILAR = candidate modified pair
-const MIN_PARAGRAPH_LENGTH = 60;
+const SIM_MIN = 0.65;
+const SIM_MAX = 0.95;
+const TOP_PAIRS = 12;
+const MAX_CHANGES = 8;
 
-const TOP_CANDIDATES   = 15;
-const RAG_CONTEXT_K    = 3;       // context passages per filing per candidate
-const JUDGE_CONCURRENCY = 6;
-
-const KEYWORDS = [
-  'risiko', 'risk', 'wesentlich', 'material', 'rückgang', 'decline',
-  'rekord', 'record', 'einbruch', 'verlust', 'loss', 'haftung',
-  'liability', 'rechtsstreit', 'litigation', 'krise', 'crisis',
-  'auswirk', 'impact', 'ergebnis', 'gewinn', 'profit', 'umsatz', 'revenue',
-];
-
-const SECTION_MARKERS = [
-  'lagebericht', 'konzernabschluss', 'risikobericht', 'prognose',
-  'vergütung', 'segment', 'ebit', 'cash flow', 'kapital',
-];
-
-// ─── Paragraph filtering + cosine ─────────────────────────────────────────
-
-export function isUsefulParagraph(p) {
-  if (!p?.text || p.text.length < MIN_PARAGRAPH_LENGTH) return false;
-  return /[a-zA-ZäöüÄÖÜß]{4,}/.test(p.text);
-}
-
-export function buildIndex(paragraphs) {
-  return { paragraphs, vectors: paragraphs.map((p) => normalize(p.embedding)) };
-}
-
-export function findBestMatch(queryVec, index) {
-  let best = -1, bestIdx = -1;
-  for (let i = 0; i < index.vectors.length; i++) {
-    const s = dot(queryVec, index.vectors[i]);
-    if (s > best) { best = s; bestIdx = i; }
+// Match every current paragraph to its closest previous. Returns the top
+// candidates already sliced — no scoring heuristics, just embedding cosine.
+export function findCandidatePairs(prevParagraphs, currParagraphs) {
+  const prevVecs = prevParagraphs.map((p) => normalize(p.embedding));
+  const pairs = [];
+  for (const curr of currParagraphs) {
+    const q = normalize(curr.embedding);
+    let best = -1, bestIdx = -1;
+    for (let i = 0; i < prevVecs.length; i++) {
+      const s = dot(q, prevVecs[i]);
+      if (s > best) { best = s; bestIdx = i; }
+    }
+    if (best >= SIM_MIN && best <= SIM_MAX) {
+      pairs.push({ prev: prevParagraphs[bestIdx], curr, similarity: best });
+    }
   }
-  return { index: bestIdx, similarity: best };
+  pairs.sort((a, b) => b.similarity - a.similarity);
+  return pairs.slice(0, TOP_PAIRS);
 }
 
-// Returns the top-K paragraphs in `index` by cosine to queryVec, skipping
-// any paragraph whose _id appears in excludeIds.
-export function findTopK(queryVec, index, k, excludeIds = []) {
-  const exclude = new Set(excludeIds.map((x) => String(x)));
-  const scored = [];
-  for (let i = 0; i < index.vectors.length; i++) {
-    if (exclude.has(String(index.paragraphs[i]._id))) continue;
-    scored.push({ i, score: dot(queryVec, index.vectors[i]) });
-  }
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, k).map((s) => ({ ...index.paragraphs[s.i], score: s.score }));
-}
+const CHANGE_SCHEMA = {
+  name: 'comparison_changes',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      changes: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            pair_id: { type: 'integer' },
+            topic: { type: 'string' },
+            summary: { type: 'string' },
+            prev_quote: { type: 'string' },
+            curr_quote: { type: 'string' },
+            impact: { type: 'string', enum: ['high', 'medium', 'low'] },
+          },
+          required: ['pair_id', 'topic', 'summary', 'prev_quote', 'curr_quote', 'impact'],
+        },
+      },
+    },
+    required: ['changes'],
+  },
+};
 
-// ─── Materiality scoring (heuristic candidate ranker only) ────────────────
-
-function extractNumbers(text) {
-  const matches = [...text.matchAll(/(?<![\w.])\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?(?!\w)/g)];
-  return matches
-    .map((m) => parseFloat(m[0].replace(/\./g, '').replace(',', '.')))
-    .filter((n) => !Number.isNaN(n) && n > 0);
-}
-
-function numericDelta(prevText, currText) {
-  const a = extractNumbers(prevText).sort((x, y) => y - x).slice(0, 5);
-  const b = extractNumbers(currText).sort((x, y) => y - x).slice(0, 5);
-  if (!a.length || !b.length) return 0;
-  let max = 0;
-  const k = Math.min(a.length, b.length);
-  for (let i = 0; i < k; i++) {
-    if (a[i] < 1) continue;
-    const d = Math.abs(b[i] - a[i]) / a[i];
-    if (d > max) max = d;
-  }
-  return Math.min(max, 1);
-}
-
-function keywordSignal(text) {
-  const lower = text.toLowerCase();
-  let hits = 0;
-  for (const kw of KEYWORDS) if (lower.includes(kw)) hits++;
-  return Math.min(hits / 4, 1);
-}
-
-function sectionWeight(text, label) {
-  const blob = `${label} ${text.slice(0, 200)}`.toLowerCase();
-  for (const m of SECTION_MARKERS) if (blob.includes(m)) return 1;
-  return 0.4;
-}
-
-function lengthBonus(text) { return Math.min(text.length / 400, 1); }
-function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
-
-export function scoreModified(prev, curr) {
-  return clamp01(
-    0.45 * numericDelta(prev.text, curr.text) +
-    0.30 * keywordSignal(curr.text) +
-    0.15 * sectionWeight(curr.text, curr.section) +
-    0.10 * lengthBonus(curr.text)
-  );
-}
-
-export function impactBucket(score) {
-  if (score >= 0.6) return 'high';
-  if (score >= 0.3) return 'medium';
-  return 'low';
-}
-
-// ─── LLM judge ────────────────────────────────────────────────────────────
-//
-// One call per candidate. The LLM sees the candidate pair PLUS 3 supporting
-// passages from each filing (most semantically similar to the candidate).
-// It returns JSON: either {verdict:"change", summary, cites_prev, cites_curr}
-// or {verdict:"not_a_change"}.
-
-const JUDGE_SYSTEM = [
-  'You are a financial-analyst assistant comparing two annual reports of the same company.',
-  'You will see numbered PREV passages (from the previous filing) and CURR passages (from the current filing).',
-  'Passage [1] on each side is the strongest candidate; passages [2..] are supporting context retrieved by semantic similarity.',
-  'Decide whether the passages together describe a real, meaningful change of the SAME metric or topic.',
+const SYSTEM_PROMPT = [
+  'You compare two annual reports of the same company.',
+  'You receive numbered pairs of paragraphs (PREV = older filing, CURR = newer). Each pair was pre-matched by semantic similarity, so they discuss the same topic.',
   '',
-  'Reply with ONE LINE of strict JSON only. No prose, no markdown fences.',
+  'Identify the material changes — figures that moved, risks added/removed, outlook shifts. Skip cosmetic edits (year labels, formatting).',
   '',
-  'If it IS a real change:',
-  '  {"verdict":"change","summary":"<one declarative sentence in the source language, max 30 words>","cites_prev":[<one or more 1-based numbers from PREV passages>],"cites_curr":[<one or more 1-based numbers from CURR passages>]}',
+  'CRITICAL — keep quotes SHORT and FOCUSED:',
+  '- prev_quote and curr_quote MUST be short — at most ~80 characters each, ideally just the changed phrase or number ("75,9 Mrd. €", "neue Cyber-Risiken").',
+  '- Quotes MUST be exact verbatim substrings of the indicated paragraph.',
+  '- Never quote a whole sentence. Quote ONLY the few words that prove the change.',
   '',
-  'If it is NOT a real change (mismatched table fragments, different metrics, no clear comparison, or no supporting evidence on both sides):',
-  '  {"verdict":"not_a_change"}',
+  'For each change:',
+  '- pair_id: 1-based pair number.',
+  '- topic: 2–5 word noun phrase categorizing the change (e.g. "Board compensation", "Pension provisions", "Strategic risks"). Always in English, even when the passages are German.',
+  '- summary: ONE short declarative sentence in the source language. Max 25 words.',
+  '- impact: high (key metric/risk/outlook), medium (secondary), low (minor).',
   '',
-  'Rules:',
-  '- Numbers must appear VERBATIM in the cited passages. German numbers use "." as thousands separator and "," as decimal.',
-  '- The summary must be ONE declarative sentence — no commentary, no self-correction, no "Note:" prefixes.',
-  '- cites_prev MUST include the passages that contain the OLD value. cites_curr MUST include the passages that contain the NEW value.',
-  '- You MUST cite at least one passage from EACH side. If the numbers/metric in your summary do not appear in the cited passages, reply not_a_change.',
+  'German numbers: "." thousands, "," decimal. Quote character-for-character.',
+  'If nothing material changed, return {"changes": []}.',
 ].join('\n');
 
-export async function judgeCandidate({ prevParagraph, currParagraph, prevFilingYear, currFilingYear }, prevContext, currContext) {
-  // The candidate paragraphs become passage [1] on each side. Context follows
-  // as [2..]. The LLM then cites by passage number; we resolve those back to
-  // paragraph rows for Citation persistence.
-  const prevList = [prevParagraph, ...prevContext];
-  const currList = [currParagraph, ...currContext];
+export async function judgeAllPairs(pairs, { prevYear, currYear }) {
+  if (!pairs.length) return [];
   const user = [
-    `PREV passages (FY${prevFilingYear}):`,
-    ...prevList.map((p, i) => `[${i + 1}] page ${p.page}: ${p.text}`),
+    `You are comparing FY${prevYear} (PREV) vs FY${currYear} (CURR).`,
     '',
-    `CURR passages (FY${currFilingYear}):`,
-    ...currList.map((p, i) => `[${i + 1}] page ${p.page}: ${p.text}`),
+    ...pairs.flatMap((p, i) => [
+      `--- Pair ${i + 1} ---`,
+      `PREV: ${p.prev.text}`,
+      `CURR: ${p.curr.text}`,
+      '',
+    ]),
   ].join('\n');
 
-  const raw = await chat(
-    'summary',
-    [{ role: 'system', content: JUDGE_SYSTEM }, { role: 'user', content: user }],
-    { temperature: 0.1, maxTokens: 250, timeoutMs: 60000 }
-  );
-
-  // Tolerate stray prose around the JSON. Take the first {...} block.
-  const match = raw.match(/\{[\s\S]*\}/);
   let parsed;
-  if (match) {
-    try { parsed = JSON.parse(match[0]); } catch { /* fall through */ }
+  try {
+    parsed = await chat(
+      'judge',
+      [{ role: 'system', content: SYSTEM_PROMPT }, { role: 'user', content: user }],
+      { temperature: 0.1, maxTokens: 4000, timeoutMs: 90000, schema: CHANGE_SCHEMA }
+    );
+  } catch (err) {
+    throw new Error(`Judge call failed: ${err.message}`);
   }
-  if (!parsed) return { verdict: 'not_a_change', _raw: raw };
-  // Attach the resolved lists so the worker can map cites_* indices.
-  parsed._prevList = prevList;
-  parsed._currList = currList;
-  return parsed;
+
+  const changes = parsed?.changes ?? [];
+  const out = [];
+  for (const c of changes) {
+    const pair = pairs[(c.pair_id || 0) - 1];
+    if (!pair) continue;
+    const prevHit = c.prev_quote ? resolveQuote(c.prev_quote, [pair.prev]) : null;
+    const currHit = c.curr_quote ? resolveQuote(c.curr_quote, [pair.curr]) : null;
+    if (!prevHit && !currHit) continue;
+    out.push({
+      pair,
+      topic: (c.topic || '').trim() || 'Untitled',
+      summary: (c.summary || '').trim(),
+      impact: c.impact || 'medium',
+      prev: prevHit,
+      curr: currHit,
+    });
+  }
+  return out;
 }
 
-// ─── Runtime helpers ──────────────────────────────────────────────────────
-
-export async function runPool(items, concurrency, worker) {
-  const queue = items.slice();
-  const runners = Array.from({ length: Math.min(concurrency, queue.length) }, async () => {
-    while (queue.length) await worker(queue.shift());
-  });
-  await Promise.all(runners);
-}
-
-export const COMPARE_CONSTANTS = {
-  SIMILAR_THRESHOLD,
-  MATCH_THRESHOLD,
-  TOP_CANDIDATES,
-  RAG_CONTEXT_K,
-  JUDGE_CONCURRENCY,
-};
+export const COMPARE_CONSTANTS = { SIM_MIN, SIM_MAX, TOP_PAIRS, MAX_CHANGES };
