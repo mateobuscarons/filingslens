@@ -33,6 +33,11 @@ const reportItemSchema = new mongoose.Schema(
     refId: { type: mongoose.Schema.Types.ObjectId, required: true },
     addedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     addedByName: { type: String, default: '' },
+    // Analyst override for the displayed summary/answer text. When non-empty,
+    // it replaces the LLM-generated text in the report rendering and PDF.
+    // Empty string = use the canonical Finding/Question text. Stored at the
+    // item level so the underlying Finding/Question stays untouched.
+    userSummary: { type: String, default: '' },
     notes: { type: [noteSchema], default: [] },
     order: { type: Number, default: 0 },
     isActive: { type: Boolean, default: true },

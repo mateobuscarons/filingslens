@@ -152,6 +152,42 @@ h2 { font-size: clamp(40px, 4.5vw, 64px); }
 .question { margin-top: 30px; padding: 21px 26px; background: var(--dark-soft); border-radius: 999px; font-weight: 750; }
 .answer { margin-top: 24px; padding: 28px; background: white; color: var(--ink); border-radius: 24px; line-height: 1.5; }
 
+/* ── Report item: editable summary / answer ── */
+.item-editable {
+  display: flex; align-items: flex-start; gap: 12px;
+}
+.item-editable .row-title { flex: 1; }
+.item-editable .item-answer {
+  flex: 1; font-size: 14px; line-height: 1.5;
+  color: var(--ink); white-space: pre-wrap;
+}
+.item-edit-link {
+  flex-shrink: 0; background: transparent;
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 4px 12px; font-size: 11px; font-weight: 800;
+  color: var(--muted); cursor: pointer;
+  font-family: inherit; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.item-edit-link:hover { background: var(--surface); color: var(--ink); }
+.item-edited-chip {
+  margin-left: 10px; background: var(--accent-soft); color: var(--ink);
+  min-height: 22px; padding: 0 10px; font-size: 11px;
+}
+.item-edit textarea {
+  width: 100%; padding: 12px 14px; resize: vertical;
+  border: 1px solid var(--line); border-radius: 14px;
+  background: var(--surface); color: var(--ink);
+  font-family: inherit; font-size: 14px; line-height: 1.45;
+  outline: none;
+}
+.item-edit textarea:focus { border-color: var(--ink); }
+.item-edit-actions {
+  display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap;
+}
+.item-edit-actions .button {
+  min-height: 34px; padding: 0 14px; font-size: 12px;
+}
+
 /* ── Report item + notes thread ── */
 .report-item {
   padding: 22px 26px; border: 1px solid var(--line);
@@ -292,6 +328,31 @@ h2 { font-size: clamp(40px, 4.5vw, 64px); }
 .persona-card { padding: 34px; border-radius: 34px; background: var(--surface); border: 1px solid var(--line); }
 .persona-card.dark { background: var(--dark); border-color: transparent; color: white; }
 .persona-card.dark .panel-sub { color: #c6d1ca; }
+
+/* ── Auth-page pitch (left column under the lead) ── */
+.auth-pitch { margin-top: 32px; max-width: 480px; }
+.pitch-label {
+  margin: 24px 0 10px;
+  font-size: 11px; font-weight: 800;
+  letter-spacing: 0.6px; text-transform: uppercase;
+  color: var(--muted);
+}
+.pitch-bullets {
+  margin: 0; padding: 0; list-style: none;
+  display: grid; gap: 8px;
+}
+.pitch-bullets li {
+  padding: 12px 16px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  font-size: 13px; line-height: 1.4;
+  font-weight: 650;
+  color: var(--ink);
+}
+.pitch-pricing { display: flex; flex-wrap: wrap; gap: 10px; }
+.pitch-pricing .chip { padding: 0 16px; min-height: 38px; font-size: 13px; }
+.pitch-pricing .chip strong { margin-right: 6px; font-weight: 850; }
 
 /* ── Login ── */
 .login-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(360px, 460px); gap: 56px; align-items: center; max-width: 1320px; margin: 0 auto; }
