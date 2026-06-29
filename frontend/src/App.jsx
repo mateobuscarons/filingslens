@@ -13,6 +13,7 @@ import QA           from './pages/QA.jsx';
 import ReportsList  from './pages/ReportsList.jsx';
 import Report       from './pages/Report.jsx';
 import TeamSettings  from './pages/TeamSettings.jsx';
+import Profile        from './pages/Profile.jsx';
 import Billing       from './pages/Billing.jsx';
 import VerifyEmail    from './pages/VerifyEmail.jsx';
 import ResetPassword  from './pages/ResetPassword.jsx';
@@ -43,6 +44,7 @@ export default function App() {
             <Route path="/reports" element={<ProtectedRoute><ReportsList /></ProtectedRoute>} />
             <Route path="/reports/:id" element={<ProtectedRoute><Report /></ProtectedRoute>} />
             <Route path="/settings/billing" element={<ProtectedRoute><Billing /></ProtectedRoute>} />
+            <Route path="/settings/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
             <Route path="/settings/team" element={<AdminRoute><TeamSettings /></AdminRoute>} />
 
             <Route path="/verify" element={<VerifyEmail />} />

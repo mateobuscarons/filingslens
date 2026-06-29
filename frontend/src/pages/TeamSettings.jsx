@@ -32,8 +32,14 @@ export default function TeamSettings() {
 
   useEffect(() => { refresh(); /* eslint-disable-line */ }, [firmId]);
 
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
   async function handleInvite(e) {
     e.preventDefault();
+    const ve = {};
+    if (!name.trim() || name.trim().length < 2) ve.name = 'Name must be at least 2 characters.';
+    if (!EMAIL_RE.test(email)) ve.email = 'Enter a valid email address.';
+    if (Object.keys(ve).length) { setErrors(ve); return; }
     setInviting(true); setErrors({});
     try {
       const invite = await apiFetch(`/firms/${firmId}/invites`, {

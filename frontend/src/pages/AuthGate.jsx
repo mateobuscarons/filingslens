@@ -3,6 +3,32 @@ import { useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateSignIn({ email, password }) {
+  const e = {};
+  if (!EMAIL_RE.test(email)) e.email = 'Enter a valid email address.';
+  if (!password) e.password = 'Password is required.';
+  return e;
+}
+
+function validateRegister({ name, email, password, confirm, mode, firmName, inviteCode }) {
+  const e = {};
+  if (!name || name.trim().length < 2) e.name = 'Name must be at least 2 characters.';
+  if (!EMAIL_RE.test(email)) e.email = 'Enter a valid email address.';
+  if (password.length < 8) e.password = 'Password must be at least 8 characters.';
+  if (confirm !== password) e.confirm = 'Passwords do not match.';
+  if (mode === 'team-new' && !firmName.trim()) e.firmName = 'Firm name is required.';
+  if (mode === 'team-join' && !inviteCode.trim()) e.inviteCode = 'Invite code is required.';
+  return e;
+}
+
+function validateForgot({ email }) {
+  const e = {};
+  if (!EMAIL_RE.test(email)) e.email = 'Enter a valid email address.';
+  return e;
+}
+
 export default function AuthGate() {
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -13,6 +39,7 @@ export default function AuthGate() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
   const [firmName, setFirmName] = useState('');
   const [seatLimit, setSeatLimit] = useState(5);
   const [inviteCode, setInviteCode] = useState('');
@@ -24,6 +51,8 @@ export default function AuthGate() {
 
   async function handleSignIn(e) {
     e.preventDefault();
+    const ve = validateSignIn({ email, password });
+    if (Object.keys(ve).length) { setErrors(ve); return; }
     setErrors({}); setLoading(true);
     try {
       const data = await apiFetch('/auth/login', {
@@ -43,6 +72,8 @@ export default function AuthGate() {
 
   async function handleRegister(e) {
     e.preventDefault();
+    const ve = validateRegister({ name, email, password, confirm, mode, firmName, inviteCode });
+    if (Object.keys(ve).length) { setErrors(ve); return; }
     setErrors({}); setLoading(true);
     const body = { mode, name, email, password };
     if (mode === 'team-new') { body.firmName = firmName; body.seatLimit = Number(seatLimit); }
@@ -62,7 +93,9 @@ export default function AuthGate() {
 
   async function handleForgot(e) {
     e.preventDefault();
-    setLoading(true);
+    const ve = validateForgot({ email });
+    if (Object.keys(ve).length) { setErrors(ve); return; }
+    setErrors({}); setLoading(true);
     try {
       await apiFetch('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
       setForgotSent(true);
@@ -130,8 +163,8 @@ export default function AuthGate() {
 
           {tab === 'signin' && (
             <form onSubmit={handleSignIn}>
-              <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus required />
-              <PasswordField label="Password" value={password} onChange={setPassword} required />
+              <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus error={errors.email} />
+              <PasswordField label="Password" value={password} onChange={setPassword} error={errors.password} />
               <FormError msg={errors._form} />
               <div className="actions" style={{ marginTop: 26 }}>
                 <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
@@ -156,7 +189,8 @@ export default function AuthGate() {
 
               <Field label="Full name" value={name} onChange={setName} required autoFocus error={errors.name} />
               <Field label="Work email" type="email" value={email} onChange={setEmail} required error={errors.email} />
-              <PasswordField label="Password (min. 8 chars)" value={password} onChange={setPassword} required error={errors.password} />
+              <PasswordField label="Password (min. 8 chars)" value={password} onChange={setPassword} error={errors.password} />
+              <PasswordField label="Confirm password" value={confirm} onChange={setConfirm} error={errors.confirm} />
 
               {mode === 'team-new' && (
                 <>
@@ -192,7 +226,7 @@ export default function AuthGate() {
               </>
             ) : (
               <form onSubmit={handleForgot}>
-                <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus required style={{ marginTop: 24 }} />
+                <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus error={errors.email} style={{ marginTop: 24 }} />
                 <div className="actions" style={{ marginTop: 26 }}>
                   <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
                     {loading ? 'Sending…' : 'Send reset link'}
@@ -252,7 +286,7 @@ function PasswordField({ label, value, onChange, error, ...rest }) {
           }}
           tabIndex={-1}
         >
-          {show ? '🙈' : '👁'}
+          {show ? <EyeOff /> : <Eye />}
         </button>
       </div>
       {error && <div className="field-error">{error}</div>}
@@ -263,4 +297,23 @@ function PasswordField({ label, value, onChange, error, ...rest }) {
 function FormError({ msg }) {
   if (!msg) return null;
   return <p style={{ marginTop: 14, color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{msg}</p>;
+}
+
+function Eye() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+  );
+}
+
+function EyeOff() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+      <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+      <line x1="1" y1="1" x2="23" y2="23"/>
+    </svg>
+  );
 }
