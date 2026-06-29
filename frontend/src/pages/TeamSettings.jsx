@@ -5,8 +5,6 @@ import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
 
 // Members list + Invites panel. Admin-only (route is wrapped in AdminRoute).
-// Invites work like dev-mode forgot-password: server returns the code,
-// admin sees it, admin shares it manually with the invitee.
 export default function TeamSettings() {
   const { user } = useAuth();
   const toast = useToast();
@@ -48,7 +46,7 @@ export default function TeamSettings() {
       });
       setInvites((prev) => [invite, ...prev]);
       setName(''); setEmail('');
-      toast.success(`Invite code ${invite.code} created. Share it with ${invite.name}.`);
+      toast.success(`Invite sent to ${invite.email}. They'll receive a code by email.`);
     } catch (err) {
       if (err instanceof ApiError) setErrors(err.fields ?? { _form: err.message });
       else toast.error('Could not create invite.');
@@ -134,7 +132,7 @@ export default function TeamSettings() {
             <div className="panel-head">
               <div>
                 <h3 className="panel-title">Invite a member</h3>
-                <p className="panel-sub">We generate a code. Share it; the invitee registers with it.</p>
+                <p className="panel-sub">An invite code is emailed directly to the invitee. They register using it.</p>
               </div>
             </div>
             <form onSubmit={handleInvite} style={{ padding: '0 40px 32px' }}>
@@ -151,7 +149,7 @@ export default function TeamSettings() {
               {errors._form && <p style={{ color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{errors._form}</p>}
               <div className="actions">
                 <button className="button accent" type="submit" disabled={inviting || seatsUsed >= (firm?.seatLimit ?? 0)}>
-                  {inviting ? 'Creating…' : 'Create invite code'}
+                  {inviting ? 'Sending…' : 'Send invite'}
                 </button>
               </div>
             </form>
@@ -161,8 +159,8 @@ export default function TeamSettings() {
                 {invites.map((inv) => (
                   <div className="data-row" key={inv._id}>
                     <div>
-                      <div className="row-title" style={{ fontFamily: 'monospace' }}>{inv.code}</div>
-                      <div className="row-sub">{inv.name} · {inv.email} · {inv.status}</div>
+                      <div className="row-title">{inv.name}</div>
+                      <div className="row-sub">{inv.email} · {inv.status}</div>
                     </div>
                     {inv.status === 'pending' && (
                       <button className="chip" style={{ border: 'none', cursor: 'pointer' }} onClick={() => revoke(inv)}>

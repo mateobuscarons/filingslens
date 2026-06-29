@@ -24,18 +24,13 @@ async function send({ to, subject, text }) {
   }
 }
 
-export async function sendVerificationEmail({ toName, toEmail, token }) {
-  const link = `http://localhost:5173/verify?token=${token}`;
+export async function sendWelcomeEmail({ toName, toEmail }) {
   await send({
     to: toEmail,
-    subject: 'Verify your FilingLens account',
+    subject: 'Welcome to FilingLens',
     text: `Hi ${toName},
 
-Thanks for signing up. Click the link below to verify your email and activate your account:
-
-${link}
-
-This link expires in 24 hours.
+Your FilingLens account is ready. Sign in at http://localhost:5173 to get started.
 
 — FilingLens`,
   });
@@ -84,6 +79,24 @@ export async function sendMentionNotification({ toName, toEmail, byName, reportI
 ${byName} tagged you in a note on a FilingLens report.
 
 View it here: http://localhost:5173/reports/${reportId}
+
+— FilingLens`,
+  });
+}
+
+export async function sendPaymentReceipt({ toName, toEmail, planName, amount, currency, date }) {
+  await send({
+    to: toEmail,
+    subject: 'FilingLens — payment confirmed',
+    text: `Hi ${toName},
+
+Your payment was successful. Here's your receipt:
+
+  Plan:    ${planName}
+  Amount:  ${currency} ${Number(amount).toFixed(2)}
+  Date:    ${new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+
+You now have full access to FilingLens. Sign in at http://localhost:5173.
 
 — FilingLens`,
   });

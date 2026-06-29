@@ -7,7 +7,7 @@ import { InvestmentFirm } from '../models/firm.js';
 import { TeamInvite } from '../models/teamInvite.js';
 import { signToken } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
-import { sendVerificationEmail, sendPasswordReset } from '../email.js';
+import { sendWelcomeEmail, sendPasswordReset } from '../email.js';
 
 const router = Router();
 
@@ -45,15 +45,6 @@ router.post('/register', validate(registerSchema), async (req, res, next) => {
 
     const existing = await User.findOne({ email: body.email });
     if (existing) {
-      if (!existing.emailVerified) {
-        // Unverified — resend the link instead of blocking
-        const verifyToken = crypto.randomBytes(32).toString('hex');
-        existing.emailVerifyToken = verifyToken;
-        existing.emailVerifyExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
-        await existing.save();
-        sendVerificationEmail({ toName: existing.name, toEmail: existing.email, token: verifyToken });
-        return res.status(201).json({ pending: true, message: 'Check your email to verify your account.' });
-      }
       return res.status(409).json({
         error: 'EMAIL_TAKEN',
         message: 'An account with this email already exists',
@@ -94,21 +85,19 @@ router.post('/register', validate(registerSchema), async (req, res, next) => {
       await invite.save();
     }
 
-    const verifyToken = crypto.randomBytes(32).toString('hex');
     const user = await User.create({
       name: body.name,
       email: body.email,
       passwordHash,
       role,
       firmId: firm?._id || null,
-      emailVerified: false,
-      emailVerifyToken: verifyToken,
-      emailVerifyExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      emailVerified: true,
     });
 
-    sendVerificationEmail({ toName: user.name, toEmail: user.email, token: verifyToken });
+    sendWelcomeEmail({ toName: user.name, toEmail: user.email });
 
-    res.status(201).json({ pending: true, message: 'Check your email to verify your account.' });
+    const token = signToken(user);
+    res.status(201).json({ token, user: publicUser(user, firm) });
   } catch (err) {
     next(err);
   }
@@ -124,12 +113,6 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
     const user = await User.findOne({ email: req.body.email });
     if (!user || !(await bcrypt.compare(req.body.password, user.passwordHash))) {
       return res.status(401).json({ error: 'INVALID_CREDENTIALS', message: 'Email or password incorrect' });
-    }
-    if (!user.emailVerified) {
-      return res.status(403).json({
-        error: 'EMAIL_NOT_VERIFIED',
-        message: 'Please verify your email before signing in.',
-      });
     }
     const firm = user.firmId ? await InvestmentFirm.findById(user.firmId) : null;
     res.json({ token: signToken(user), user: publicUser(user, firm) });
@@ -165,7 +148,7 @@ router.post('/forgot-password', async (req, res, next) => {
     const { email } = req.body;
     const user = await User.findOne({ email: email?.toLowerCase().trim() });
     // Always return 200 to avoid exposing which emails are registered
-    if (!user || !user.emailVerified) return res.json({ ok: true });
+    if (!user) return res.json({ ok: true });
     const token = crypto.randomBytes(32).toString('hex');
     user.passwordResetToken = token;
     user.passwordResetExpiry = new Date(Date.now() + 60 * 60 * 1000); // 1 hour

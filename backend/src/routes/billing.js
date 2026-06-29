@@ -5,6 +5,7 @@ import { Subscription } from '../models/subscription.js';
 import { PricingPlan } from '../models/pricingPlan.js';
 import { Payment } from '../models/payment.js';
 import { InvestmentFirm } from '../models/firm.js';
+import { sendPaymentReceipt } from '../email.js';
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '');
 
@@ -106,6 +107,15 @@ router.post('/subscribe', requireAuth, async (req, res, next) => {
       status: 'succeeded',
       method: 'stripe',
       stripePaymentIntentId: paymentIntentId,
+    });
+
+    sendPaymentReceipt({
+      toName: req.user.name,
+      toEmail: req.user.email,
+      planName: plan.name,
+      amount,
+      currency: 'EUR',
+      date: payment.paidAt ?? new Date(),
     });
 
     res.status(201).json({ subscription: sub, plan, payment, amount });
