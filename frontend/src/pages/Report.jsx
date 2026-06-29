@@ -80,6 +80,15 @@ export default function Report() {
     } catch { toast.error('Could not remove item.'); }
   }
 
+  async function patchItem(itemId, patch) {
+    const updated = await apiFetch(`/reports/${id}/items/${itemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    });
+    setItems((prev) => prev.map((i) => i._id === itemId ? { ...i, ...updated } : i));
+    return updated;
+  }
+
   async function applyShare(all, userIds) {
     try {
       const updated = await apiFetch(`/reports/${id}/share`, {
@@ -153,6 +162,7 @@ export default function Report() {
                 canEdit={canEdit}
                 members={members}
                 onDelete={() => deleteItem(item._id)}
+                onPatch={(patch) => patchItem(item._id, patch)}
                 onAddNote={(text) => addNote(item._id, text)}
                 onRemoveNote={(noteId) => removeNote(item._id, noteId)}
               />
@@ -293,12 +303,14 @@ function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, 
 
 // ---------- Item display --------------------------------------------------
 
-function ItemCard({ item, currentUserId, canEdit, members, onDelete, onAddNote, onRemoveNote }) {
+function ItemCard({ item, currentUserId, canEdit, members, onDelete, onPatch, onAddNote, onRemoveNote }) {
   return (
     <div className="report-item">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
         <div style={{ flex: 1 }}>
-          {item.kind === 'finding' ? <FindingBody item={item} /> : <AnswerBody item={item} />}
+          {item.kind === 'finding'
+            ? <FindingBody item={item} canEdit={canEdit} onPatch={onPatch} />
+            : <AnswerBody item={item} canEdit={canEdit} onPatch={onPatch} />}
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
           {item.kind === 'finding' && item.target?.impact && (
@@ -342,6 +354,77 @@ function renderNoteText(text) {
     part.startsWith('@')
       ? <span key={i} style={{ color: 'var(--accent)', fontWeight: 700 }}>{part}</span>
       : part
+  );
+}
+
+function EditableSummary({ originalText, override, canEdit, onPatch, variant = 'title', placeholder = '' }) {
+  const hasOverride = typeof override === 'string' && override.length > 0;
+  const displayed = hasOverride ? override : originalText;
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  function startEdit() {
+    setDraft(displayed || '');
+    setEditing(true);
+  }
+  async function save() {
+    const text = draft.trim();
+    if (text === (displayed || '').trim()) { setEditing(false); return; }
+    setSaving(true);
+    try {
+      await onPatch({ userSummary: text });
+      setEditing(false);
+    } finally { setSaving(false); }
+  }
+  async function revert() {
+    setSaving(true);
+    try {
+      await onPatch({ userSummary: '' });
+      setEditing(false);
+    } finally { setSaving(false); }
+  }
+
+  if (editing) {
+    return (
+      <div className="item-edit">
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder={placeholder}
+          rows={variant === 'title' ? 2 : 4}
+          autoFocus
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save();
+            if (e.key === 'Escape') setEditing(false);
+          }}
+        />
+        <div className="item-edit-actions">
+          <button className="button accent" onClick={save} disabled={saving}>
+            {saving ? '…' : 'Save'}
+          </button>
+          <button className="button ghost" onClick={() => setEditing(false)}>Cancel</button>
+          {hasOverride && (
+            <button className="button ghost" onClick={revert} disabled={saving}>Revert to original</button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const textClass = variant === 'title' ? 'row-title' : 'item-answer';
+  return (
+    <div className="item-editable">
+      <div className={textClass}>
+        {displayed || <em style={{ color: 'var(--muted)' }}>{placeholder}</em>}
+        {hasOverride && <span className="chip item-edited-chip">Edited</span>}
+      </div>
+      {canEdit && (
+        <button className="item-edit-link" onClick={startEdit} title="Edit this text">
+          Edit
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -462,12 +545,20 @@ function NotesPanel({ notes, currentUserId, canAdd, members = [], onAdd, onRemov
   );
 }
 
-function FindingBody({ item }) {
+function FindingBody({ item, canEdit, onPatch }) {
   const t = item.target ?? {};
   const cites = item.citations ?? [];
+  const originalSummary = t.summary || t.excerpt?.slice(0, 120) || 'Finding';
   return (
     <>
-      <div className="row-title">{t.summary || t.excerpt?.slice(0, 120) || 'Finding'}</div>
+      <EditableSummary
+        originalText={originalSummary}
+        override={item.userSummary}
+        canEdit={canEdit}
+        onPatch={onPatch}
+        variant="title"
+        placeholder="Write your own summary…"
+      />
       <div className="row-sub" style={{ marginTop: 4 }}>
         Finding · {t.section ?? '—'} · {findingTypeLabel(t.type)}
       </div>
@@ -485,15 +576,27 @@ function FindingBody({ item }) {
   );
 }
 
-function AnswerBody({ item }) {
+function AnswerBody({ item, canEdit, onPatch }) {
   const t = item.target ?? {};
   const cites = item.citations ?? [];
+  const originalAnswer = t.status === 'ready' ? (t.answer || '') : '';
   return (
     <>
       <div className="row-title">Q: {t.text}</div>
-      <p style={{ marginTop: 12, fontSize: 14, lineHeight: 1.5, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>
-        {t.status === 'ready' ? t.answer : <em style={{ color: 'var(--muted)' }}>No answer (status: {t.status}).</em>}
-      </p>
+      <div style={{ marginTop: 12 }}>
+        {originalAnswer || item.userSummary ? (
+          <EditableSummary
+            originalText={originalAnswer}
+            override={item.userSummary}
+            canEdit={canEdit}
+            onPatch={onPatch}
+            variant="paragraph"
+            placeholder="Write your own answer…"
+          />
+        ) : (
+          <em style={{ color: 'var(--muted)' }}>No answer (status: {t.status}).</em>
+        )}
+      </div>
       {cites.length > 0 && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
           {cites.map((c, i) => (
@@ -546,14 +649,19 @@ function downloadPdf(report, items) {
     writeLines(`${idx + 1}. ${item.kind === 'finding' ? 'Finding' : 'Q&A'}`, { size: 13, bold: true });
     y += 2;
 
+    // Use the analyst override when present, else the LLM original.
+    const overrideText = item.userSummary && item.userSummary.length > 0 ? item.userSummary : null;
     if (item.kind === 'finding') {
-      if (t.summary) writeLines(t.summary, { size: 12 });
+      const headline = overrideText ?? t.summary;
+      if (headline) writeLines(headline, { size: 12 });
       if (t.section) writeLines(`Topic: ${t.section} · ${findingTypeLabel(t.type)}`, { size: 9, color: [110, 110, 110] });
       if (t.excerpt) { y += 4; writeLines(t.excerpt, { size: 10 }); }
     } else {
       if (t.text) writeLines(`Q: ${t.text}`, { size: 12 });
-      if (t.answer) { y += 4; writeLines(t.answer, { size: 10 }); }
+      const body = overrideText ?? t.answer;
+      if (body) { y += 4; writeLines(body, { size: 10 }); }
     }
+    if (overrideText) writeLines('(edited by analyst)', { size: 9, color: [110, 110, 110] });
 
     if (cites.length) {
       y += 4;

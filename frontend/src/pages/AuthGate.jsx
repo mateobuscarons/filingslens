@@ -141,9 +141,24 @@ export default function AuthGate() {
               : 'Forgot your password?'}
           </h2>
           <p className="lead">
-            Compare two annual reports paragraph by paragraph. Get LLM
-            summaries, citations, and team-shared research reports.
+            For German equity analysts. Compare two filings, ask follow-ups,
+            ship a sourced report — every claim cites its exact line in the PDF.
           </p>
+
+          <div className="auth-pitch">
+            <p className="pitch-label">What analysts get</p>
+            <ul className="pitch-bullets">
+              <li>Changes between two filings surface in seconds, ranked by impact</li>
+              <li>Every finding and answer is grounded with citations</li>
+              <li>Share analyses and co-author reports with your team</li>
+            </ul>
+
+            <p className="pitch-label">Pricing</p>
+            <div className="pitch-pricing">
+              <span className="chip soft-accent"><strong>Solo</strong> €29/mo · 1 analyst</span>
+              <span className="chip soft-accent"><strong>Team</strong> €149/mo · 5 seats (+€25/seat)</span>
+            </div>
+          </div>
         </div>
 
         <div className="login-card">

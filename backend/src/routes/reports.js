@@ -183,6 +183,7 @@ router.post('/:id/items', requireAuth, validate(itemSchema), async (req, res, ne
 
 const itemPatchSchema = z.object({
   isActive: z.boolean().optional(),
+  userSummary: z.string().max(2000).optional(),
 });
 
 router.patch('/:id/items/:itemId', requireAuth, validate(itemPatchSchema), async (req, res, next) => {
