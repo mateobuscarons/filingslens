@@ -12,6 +12,7 @@ import qaRoutes from './routes/qa.js';
 import reportRoutes from './routes/reports.js';
 import firmRoutes from './routes/firms.js';
 import billingRoutes from './routes/billing.js';
+import notificationRoutes from './routes/notifications.js';
 
 const app = express();
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
@@ -29,6 +30,7 @@ app.use('/qa', qaRoutes);
 app.use('/reports', reportRoutes);
 app.use('/firms', firmRoutes);
 app.use('/billing', billingRoutes);
+app.use('/notifications', notificationRoutes);
 
 app.use((err, req, res, next) => {
   console.error('[error]', err);
