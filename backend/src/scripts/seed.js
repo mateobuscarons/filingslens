@@ -34,10 +34,7 @@ async function ensureRecoveryUser() {
       passwordHash: await bcrypt.hash(RECOVERY_PASSWORD, 10),
       role: 'firm_admin',
       firmId: firm._id,
-      emailVerified: true,
     });
-  } else {
-    await User.updateOne({ _id: elena._id }, { $set: { emailVerified: true, emailVerifyToken: null } });
   }
 
   const teamPlan = await PricingPlan.findOne({ key: 'team' });
