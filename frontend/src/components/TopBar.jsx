@@ -189,6 +189,13 @@ export default function TopBar() {
               </div>
               <div style={{ padding: '8px 0' }}>
                 <Link
+                  to="/settings/profile"
+                  onClick={() => setOpen(false)}
+                  style={{ display: 'block', padding: '9px 18px', fontSize: 13, fontWeight: 750, color: 'var(--ink)', textDecoration: 'none' }}
+                >
+                  Profile
+                </Link>
+                <Link
                   to="/settings/billing"
                   onClick={() => setOpen(false)}
                   style={{ display: 'block', padding: '9px 18px', fontSize: 13, fontWeight: 750, color: 'var(--ink)', textDecoration: 'none' }}
