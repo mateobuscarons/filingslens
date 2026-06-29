@@ -8,6 +8,8 @@ const subscriptionSchema = new mongoose.Schema(
     status: { type: String, enum: ['active', 'past_due', 'canceled'], default: 'active' },
     startedAt: { type: Date, default: Date.now },
     canceledAt: { type: Date, default: null },
+    cancelAtPeriodEnd: { type: Boolean, default: false },
+    currentPeriodEnd: { type: Date, default: null },
   },
   { timestamps: true }
 );

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth.js';
 import { sendReportShared, sendMentionNotification } from '../email.js';
+import { Notification } from '../models/notification.js';
 import { validate } from '../middleware/validate.js';
 import { ResearchReport, ReportItem } from '../models/report.js';
 import { Finding } from '../models/finding.js';
@@ -236,6 +237,12 @@ router.post('/:id/items/:itemId/notes', requireAuth, validate(noteSchema), async
         const tagged = members.filter(m => mentions.some(mn => m.name.toLowerCase().startsWith(mn)));
         for (const m of tagged) {
           sendMentionNotification({ toName: m.name, toEmail: m.email, byName: req.user.name, reportId: report._id });
+          Notification.create({
+            userId: m._id,
+            type: 'mention',
+            message: `${req.user.name} mentioned you in a note`,
+            link: `/reports/${report._id}`,
+          });
         }
       });
     }
@@ -290,6 +297,14 @@ router.post('/:id/share', requireAuth, async (req, res, next) => {
       : await User.find({ _id: { $in: userIds }, firmId: req.user.firmId }).select('name email');
     if (recipientIds.length) {
       sendReportShared({ reportTitle: report.title, sharedByName: req.user.name, firmMembers: recipientIds });
+      for (const m of recipientIds) {
+        Notification.create({
+          userId: m._id,
+          type: 'report_shared',
+          message: `${req.user.name} shared "${report.title}" with you`,
+          link: `/reports/${report._id}`,
+        });
+      }
     }
 
     res.json(report);

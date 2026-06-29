@@ -12,11 +12,14 @@ function getInitials(name) {
 }
 
 export default function TopBar() {
-  const { user, logout } = useAuth();
+  const { user, logout, subscription } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [bellOpen, setBellOpen] = useState(false);
+  const [notifications, setNotifications] = useState([]);
   const ref = useRef(null);
+  const bellRef = useRef(null);
 
   useEffect(() => {
     function handleClick(e) {
@@ -24,10 +27,34 @@ export default function TopBar() {
         setOpen(false);
         setConfirmDelete(false);
       }
+      if (bellRef.current && !bellRef.current.contains(e.target)) {
+        setBellOpen(false);
+      }
     }
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    function fetchNotifications() {
+      apiFetch('/notifications').then(setNotifications).catch(() => {});
+    }
+    fetchNotifications();
+    const id = setInterval(fetchNotifications, 30000);
+    return () => clearInterval(id);
+  }, [user]);
+
+  const unread = notifications.filter(n => !n.read).length;
+
+  async function openBell() {
+    setBellOpen(o => !o);
+    if (unread > 0) {
+      apiFetch('/notifications/read-all', { method: 'PATCH' }).then(() => {
+        setNotifications(ns => ns.map(n => ({ ...n, read: true })));
+      });
+    }
+  }
 
   function handleLogout() {
     logout();
@@ -45,6 +72,82 @@ export default function TopBar() {
       <Link to="/dashboard" className="brand">FilingLens</Link>
       <ProductNav />
       {user && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+        {subscription?.cancelAtPeriodEnd && (
+          <Link
+            to="/settings/billing"
+            style={{
+              fontSize: 12, fontWeight: 750, color: 'var(--red)',
+              background: '#fff0f0', border: '1px solid #ffc5c5',
+              borderRadius: 20, padding: '4px 12px',
+              textDecoration: 'none', whiteSpace: 'nowrap',
+            }}
+          >
+            Plan cancels {new Date(subscription.currentPeriodEnd).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+          </Link>
+        )}
+
+        {/* Bell */}
+        <div ref={bellRef} style={{ position: 'relative' }}>
+          <button
+            onClick={openBell}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, position: 'relative', display: 'flex', alignItems: 'center' }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--ink)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+              <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+            </svg>
+            {unread > 0 && (
+              <span style={{
+                position: 'absolute', top: 2, right: 2,
+                background: 'var(--accent)', color: 'white',
+                borderRadius: '50%', width: 14, height: 14,
+                fontSize: 9, fontWeight: 860, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                lineHeight: 1,
+              }}>
+                {unread > 9 ? '9+' : unread}
+              </span>
+            )}
+          </button>
+          {bellOpen && (
+            <div style={{
+              position: 'absolute', top: 38, right: 0,
+              background: 'white', border: '1px solid var(--line)',
+              borderRadius: 14, boxShadow: '0 8px 32px rgba(0,0,0,0.10)',
+              minWidth: 280, maxWidth: 340, zIndex: 100, overflow: 'hidden',
+            }}>
+              <div style={{ padding: '14px 18px 10px', borderBottom: '1px solid var(--line)', fontSize: 13, fontWeight: 860 }}>
+                Notifications
+              </div>
+              {notifications.length === 0 ? (
+                <div style={{ padding: '18px', fontSize: 13, color: 'var(--muted)' }}>All caught up.</div>
+              ) : notifications.map(n => (
+                <div
+                  key={n._id}
+                  onClick={() => { if (n.link) { navigate(n.link); setBellOpen(false); } }}
+                  style={{
+                    padding: '11px 18px',
+                    fontSize: 13,
+                    fontWeight: n.read ? 500 : 750,
+                    color: 'var(--ink)',
+                    cursor: n.link ? 'pointer' : 'default',
+                    borderBottom: '1px solid var(--line)',
+                    background: n.read ? 'white' : 'var(--surface)',
+                  }}
+                  onMouseEnter={e => e.currentTarget.style.background = 'var(--surface)'}
+                  onMouseLeave={e => e.currentTarget.style.background = n.read ? 'white' : 'var(--surface)'}
+                >
+                  <div>{n.message}</div>
+                  <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 3 }}>
+                    {new Date(n.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Avatar */}
         <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
           <div
             onClick={() => setOpen(o => !o)}
@@ -153,6 +256,7 @@ export default function TopBar() {
               </div>
             </div>
           )}
+        </div>
         </div>
       )}
     </div>

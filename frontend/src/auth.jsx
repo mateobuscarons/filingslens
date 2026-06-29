@@ -21,7 +21,9 @@ export function AuthProvider({ children }) {
   const loadSubscription = useCallback(async () => {
     try {
       const data = await apiFetch('/billing/subscription');
-      setSubscription(data.subscription);
+      const s = data.subscription;
+      const isActive = s && s.status !== 'canceled' && (!s.cancelAtPeriodEnd || new Date(s.currentPeriodEnd) > new Date());
+      setSubscription(isActive ? s : null);
     } catch (err) {
       setSubscription(null);
     }
@@ -83,7 +85,8 @@ export function AuthOnlyRoute({ children }) {
   const { user, subscription, ready } = useAuth();
   if (!ready) return null;
   if (!user) return <Navigate to="/" replace />;
-  if (subscription) return <Navigate to="/dashboard" replace />;
+  // Allow through if no sub, OR if sub is pending cancellation (user wants to renew with new payment)
+  if (subscription && !subscription.cancelAtPeriodEnd) return <Navigate to="/dashboard" replace />;
   return children;
 }
 
