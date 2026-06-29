@@ -154,19 +154,17 @@ export default function TeamSettings() {
               </div>
             </form>
 
-            {invites.length > 0 && (
+            {pendingInvites.length > 0 && (
               <div className="row-list">
-                {invites.map((inv) => (
+                {pendingInvites.map((inv) => (
                   <div className="data-row" key={inv._id}>
                     <div>
                       <div className="row-title">{inv.name}</div>
-                      <div className="row-sub">{inv.email} · {inv.status}</div>
+                      <div className="row-sub">{inv.email}</div>
                     </div>
-                    {inv.status === 'pending' && (
-                      <button className="chip" style={{ border: 'none', cursor: 'pointer' }} onClick={() => revoke(inv)}>
-                        Revoke
-                      </button>
-                    )}
+                    <button className="chip" style={{ border: 'none', cursor: 'pointer' }} onClick={() => revoke(inv)}>
+                      Revoke
+                    </button>
                   </div>
                 ))}
               </div>
