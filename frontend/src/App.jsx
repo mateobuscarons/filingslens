@@ -15,7 +15,6 @@ import Report       from './pages/Report.jsx';
 import TeamSettings  from './pages/TeamSettings.jsx';
 import Profile        from './pages/Profile.jsx';
 import Billing       from './pages/Billing.jsx';
-import VerifyEmail    from './pages/VerifyEmail.jsx';
 import ResetPassword  from './pages/ResetPassword.jsx';
 
 // `/` routes to the right place based on auth + subscription state.
@@ -47,7 +46,6 @@ export default function App() {
             <Route path="/settings/profile" element={<ProtectedRoute><Profile /></ProtectedRoute>} />
             <Route path="/settings/team" element={<AdminRoute><TeamSettings /></AdminRoute>} />
 
-            <Route path="/verify" element={<VerifyEmail />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

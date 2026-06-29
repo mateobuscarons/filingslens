@@ -121,27 +121,6 @@ router.post('/login', validate(loginSchema), async (req, res, next) => {
   }
 });
 
-router.get('/verify', async (req, res, next) => {
-  try {
-    const { token } = req.query;
-    if (!token) return res.status(400).json({ error: 'MISSING_TOKEN', message: 'No token provided' });
-    const user = await User.findOne({ emailVerifyToken: token });
-    if (!user) {
-      return res.status(400).json({ error: 'INVALID_TOKEN', message: 'Link is invalid or already used.' });
-    }
-    if (user.emailVerifyExpiry && user.emailVerifyExpiry < new Date()) {
-      return res.status(400).json({ error: 'TOKEN_EXPIRED', message: 'Link has expired. Please register again to get a new one.' });
-    }
-    user.emailVerified = true;
-    user.emailVerifyToken = null;
-    user.emailVerifyExpiry = null;
-    await user.save();
-    const firm = user.firmId ? await InvestmentFirm.findById(user.firmId) : null;
-    res.json({ token: signToken(user), user: publicUser(user, firm) });
-  } catch (err) {
-    next(err);
-  }
-});
 
 router.post('/forgot-password', async (req, res, next) => {
   try {
