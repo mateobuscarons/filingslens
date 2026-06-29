@@ -91,7 +91,6 @@ router.post('/register', validate(registerSchema), async (req, res, next) => {
       passwordHash,
       role,
       firmId: firm?._id || null,
-      emailVerified: true,
     });
 
     sendWelcomeEmail({ toName: user.name, toEmail: user.email });
