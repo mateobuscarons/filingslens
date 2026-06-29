@@ -11,6 +11,7 @@ const filingSchema = new mongoose.Schema(
       enum: ['pending', 'parsing', 'embedding', 'ready', 'failed'],
       default: 'pending',
     },
+    ingestError: { type: String, default: null },
   },
   { timestamps: true }
 );

@@ -7,8 +7,9 @@ import { requireAuth } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { Filing } from '../models/filing.js';
 import { Company } from '../models/company.js';
-import { ingestFiling } from '../ai/ingest.js';
+import { ingestFiling, ingestFromText } from '../ai/ingest.js';
 import { getNimClient } from '../ai/nim.js';
+import { searchCompanies, fetchReportText } from '../ai/bundesanzeiger.js';
 
 const router = Router();
 const UPLOAD_DIR = path.resolve('data/uploads');
@@ -80,6 +81,107 @@ router.post('/upload', requireAuth, upload.single('file'), validate(uploadSchema
       console.error('[ingest] failed', err);
       Filing.updateOne({ _id: filing._id }, { $set: { ingestStatus: 'failed' } });
     });
+
+    res.status(202).json({ filingId: filing._id, companyId: company._id, status: 'pending' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Fetch from URL ────────────────────────────────────────────────────────────
+const fetchUrlSchema = z.object({
+  url: z.string().url().startsWith('http'),
+  companyName: z.string().min(2).max(120),
+  fiscalYear: z.coerce.number().int().min(2000).max(2099),
+});
+
+router.post('/fetch-url', requireAuth, validate(fetchUrlSchema), async (req, res, next) => {
+  try {
+    if (!getNimClient()) {
+      return res.status(503).json({ error: 'NIM_UNAVAILABLE', message: 'NIM_API_KEY not configured' });
+    }
+    const { url, companyName, fiscalYear } = req.body;
+
+    const nameLower = companyName.trim().toLowerCase();
+    const company = await Company.findOneAndUpdate(
+      { nameLower },
+      { $setOnInsert: { name: companyName.trim(), nameLower } },
+      { upsert: true, new: true }
+    );
+
+    const fileName = `${company._id}-${fiscalYear}.pdf`;
+    const targetPath = path.join(UPLOAD_DIR, fileName);
+
+    const dlRes = await fetch(url);
+    if (!dlRes.ok) return res.status(422).json({ error: 'DOWNLOAD_FAILED', message: `Could not download PDF: ${dlRes.status}` });
+    const buf = Buffer.from(await dlRes.arrayBuffer());
+    await fs.writeFile(targetPath, buf);
+
+    const filing = await Filing.findOneAndUpdate(
+      { companyId: company._id, fiscalYear },
+      { $set: { companyId: company._id, fiscalYear, fileName, ingestStatus: 'pending', ingestError: null } },
+      { upsert: true, new: true }
+    );
+
+    ingestFiling(filing._id, targetPath).catch((err) => {
+      console.error('[ingest/url] failed', err);
+      Filing.updateOne({ _id: filing._id }, { $set: { ingestStatus: 'failed', ingestError: err.message } });
+    });
+
+    res.status(202).json({ filingId: filing._id, companyId: company._id, status: 'pending' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Bundesanzeiger search ─────────────────────────────────────────────────────
+router.get('/bundesanzeiger/search', requireAuth, async (req, res, next) => {
+  const q = (req.query.q || '').trim();
+  if (!q || q.length < 2) {
+    return res.status(400).json({ error: 'VALIDATION', message: 'Query must be at least 2 characters' });
+  }
+  try {
+    const results = await searchCompanies(q);
+    res.json(results);
+  } catch (err) {
+    console.error('[bundesanzeiger/search]', err.message);
+    res.status(503).json({ error: 'BUNDESANZEIGER_UNAVAILABLE', message: err.message });
+  }
+});
+
+// ── Bundesanzeiger fetch ──────────────────────────────────────────────────────
+const baFetchSchema = z.object({
+  reportUrl: z.string().url(),
+  companyName: z.string().min(2).max(120),
+  fiscalYear: z.coerce.number().int().min(2000).max(2099),
+});
+
+router.post('/bundesanzeiger/fetch', requireAuth, validate(baFetchSchema), async (req, res, next) => {
+  try {
+    if (!getNimClient()) {
+      return res.status(503).json({ error: 'NIM_UNAVAILABLE', message: 'NIM_API_KEY not configured' });
+    }
+    const { reportUrl, companyName, fiscalYear } = req.body;
+
+    const nameLower = companyName.trim().toLowerCase();
+    const company = await Company.findOneAndUpdate(
+      { nameLower },
+      { $setOnInsert: { name: companyName.trim(), nameLower } },
+      { upsert: true, new: true }
+    );
+
+    const filing = await Filing.findOneAndUpdate(
+      { companyId: company._id, fiscalYear },
+      { $set: { companyId: company._id, fiscalYear, fileName: null, ingestStatus: 'pending', ingestError: null } },
+      { upsert: true, new: true }
+    );
+
+    fetchReportText(reportUrl)
+      .then((text) => ingestFromText(filing._id, text))
+      .catch((err) => {
+        console.error('[bundesanzeiger/fetch] failed', err);
+        Filing.updateOne({ _id: filing._id }, { $set: { ingestStatus: 'failed', ingestError: err.message } });
+      });
 
     res.status(202).json({ filingId: filing._id, companyId: company._id, status: 'pending' });
   } catch (err) {
