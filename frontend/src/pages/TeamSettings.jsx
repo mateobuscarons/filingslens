@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { useToast } from '../notifications.jsx';
@@ -118,7 +118,7 @@ export default function TeamSettings() {
                     <div className="row-sub">{m.email} · {m.role === 'firm_admin' ? 'Admin' : 'Analyst'}</div>
                   </div>
                   {m._id !== user.id && (
-                    <button className="chip red" style={{ border: 'none', cursor: 'pointer' }} onClick={() => removeMember(m)}>
+                    <button className="chip red btn" onClick={() => removeMember(m)}>
                       Delete account
                     </button>
                   )}
@@ -135,7 +135,7 @@ export default function TeamSettings() {
                 <p className="panel-sub">An invite code is emailed directly to the invitee. They register using it.</p>
               </div>
             </div>
-            <form onSubmit={handleInvite} style={{ padding: '0 40px 32px' }}>
+            <form onSubmit={handleInvite} className="panel-form">
               <div className="login-field">
                 <div className="field-label">Full name</div>
                 <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -146,7 +146,7 @@ export default function TeamSettings() {
                 <input className="field-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
                 {errors.email && <div className="field-error">{errors.email}</div>}
               </div>
-              {errors._form && <p style={{ color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{errors._form}</p>}
+              {errors._form && <p className="form-error">{errors._form}</p>}
               <div className="actions">
                 <button className="button accent" type="submit" disabled={inviting || seatsUsed >= (firm?.seatLimit ?? 0)}>
                   {inviting ? 'Sending…' : 'Send invite'}
@@ -162,9 +162,7 @@ export default function TeamSettings() {
                       <div className="row-title">{inv.name}</div>
                       <div className="row-sub">{inv.email}</div>
                     </div>
-                    <button className="chip" style={{ border: 'none', cursor: 'pointer' }} onClick={() => revoke(inv)}>
-                      Revoke
-                    </button>
+                    <button className="chip btn" onClick={() => revoke(inv)}>Revoke</button>
                   </div>
                 ))}
               </div>

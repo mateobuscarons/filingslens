@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { apiFetch, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
@@ -39,7 +39,7 @@ export default function Billing() {
       <div className="app-grid">
         <TopBar />
 
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between' }}>
+        <div className="page-head">
           <div>
             <p className="eyebrow">Billing</p>
             <h2>{plan?.name} plan · €{latest}/mo</h2>
@@ -50,24 +50,20 @@ export default function Billing() {
             </p>
           </div>
           {!isTeamAdmin && (
-            <div style={{ flexShrink: 0, paddingTop: 8, display: 'flex', gap: 14, alignItems: 'center' }}>
+            <div className="page-head-actions">
               {sub.cancelAtPeriodEnd ? (
-                <Link to="/billing/setup" style={{ fontSize: 13, color: '#22a05a', textDecoration: 'underline', fontWeight: 750 }}>
-                  Renew
-                </Link>
+                <Link className="text-link green" to="/billing/setup">Renew</Link>
               ) : !confirming ? (
-                <button onClick={() => setConfirming(true)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--red)', textDecoration: 'underline', padding: 0, fontWeight: 750 }}>
+                <button className="text-link red" onClick={() => setConfirming(true)}>
                   Cancel subscription
                 </button>
               ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="inline-confirm">
                   <span style={{ fontSize: 13, color: 'var(--ink)' }}>Sure?</span>
-                  <button onClick={cancelSub} disabled={canceling} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--red)', textDecoration: 'underline', padding: 0, fontWeight: 750 }}>
+                  <button className="text-link red" onClick={cancelSub} disabled={canceling}>
                     {canceling ? 'Cancelling…' : 'Yes'}
                   </button>
-                  <button onClick={() => setConfirming(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: 'var(--muted)', textDecoration: 'underline', padding: 0 }}>
-                    Keep
-                  </button>
+                  <button className="text-link muted" onClick={() => setConfirming(false)}>Keep</button>
                 </div>
               )}
             </div>

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { apiFetch, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { useToast } from '../notifications.jsx';
@@ -77,7 +77,7 @@ export default function Profile() {
                 <p className="panel-sub">How your name appears in reports and mentions.</p>
               </div>
             </div>
-            <form onSubmit={saveName} style={{ padding: '0 40px 32px' }}>
+            <form onSubmit={saveName} className="panel-form">
               <div className="login-field">
                 <div className="field-label">Full name</div>
                 <input
@@ -104,7 +104,7 @@ export default function Profile() {
                 <p className="panel-sub">Must be at least 8 characters.</p>
               </div>
             </div>
-            <form onSubmit={savePassword} style={{ padding: '0 40px 32px' }}>
+            <form onSubmit={savePassword} className="panel-form">
               <PasswordField
                 label="Current password"
                 value={currentPassword}
@@ -165,20 +165,14 @@ function PasswordField({ label, value, onChange, show, onToggle, error }) {
   return (
     <div className="login-field">
       <div className="field-label">{label}</div>
-      <div style={{ position: 'relative' }}>
+      <div className="pwd-wrap">
         <input
           className="field-input"
           type={show ? 'text' : 'password'}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          style={{ paddingRight: 40 }}
         />
-        <button
-          type="button"
-          onClick={onToggle}
-          tabIndex={-1}
-          style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 16 }}
-        >
+        <button type="button" className="pwd-toggle" onClick={onToggle} tabIndex={-1}>
           {show ? <EyeOff /> : <Eye />}
         </button>
       </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { loadStripe } from '@stripe/stripe-js';
 import { Elements, CardNumberElement, CardExpiryElement, CardCvcElement, useStripe, useElements } from '@stripe/react-stripe-js';
@@ -20,13 +20,6 @@ const ELEMENT_STYLE = {
   },
 };
 
-const fieldBox = {
-  border: '1px solid var(--line)',
-  borderRadius: 10,
-  padding: '13px 14px',
-  background: 'white',
-};
-
 function CheckoutForm({ amount }) {
   const stripe = useStripe();
   const elements = useElements();
@@ -43,10 +36,8 @@ function CheckoutForm({ amount }) {
     setPaying(true);
     setCardError('');
     try {
-      // Step 1: create PaymentIntent on our server
       const { clientSecret } = await apiFetch('/billing/create-payment-intent', { method: 'POST' });
 
-      // Step 2: confirm card payment with Stripe directly
       const { error, paymentIntent } = await stripe.confirmCardPayment(clientSecret, {
         payment_method: { card: elements.getElement(CardNumberElement) },
       });
@@ -56,7 +47,6 @@ function CheckoutForm({ amount }) {
         return;
       }
 
-      // Step 3: record subscription on our server
       await apiFetch('/billing/subscribe', {
         method: 'POST',
         body: JSON.stringify({ paymentIntentId: paymentIntent.id }),
@@ -73,28 +63,28 @@ function CheckoutForm({ amount }) {
     <form onSubmit={confirm}>
       <div className="login-field" style={{ marginTop: 24 }}>
         <div className="field-label">Card number</div>
-        <div style={fieldBox}>
+        <div className="stripe-field">
           <CardNumberElement options={ELEMENT_STYLE} onChange={() => setCardError('')} />
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+      <div className="card-pair">
         <div className="login-field">
           <div className="field-label">Expiry</div>
-          <div style={fieldBox}>
+          <div className="stripe-field">
             <CardExpiryElement options={ELEMENT_STYLE} onChange={() => setCardError('')} />
           </div>
         </div>
         <div className="login-field">
           <div className="field-label">CVC</div>
-          <div style={fieldBox}>
+          <div className="stripe-field">
             <CardCvcElement options={ELEMENT_STYLE} onChange={() => setCardError('')} />
           </div>
         </div>
       </div>
 
-      {cardError && <p style={{ color: '#d94f4f', fontSize: 13, marginTop: 4 }}>{cardError}</p>}
-      <div className="actions" style={{ marginTop: 26 }}>
+      {cardError && <p className="card-error">{cardError}</p>}
+      <div className="actions form">
         <button className="button accent" type="submit" disabled={!stripe || paying} style={{ flex: 1 }}>
           {paying ? 'Processing…' : `Pay €${amount}/mo`}
         </button>
@@ -131,7 +121,7 @@ export default function PlanAndPay() {
         </div>
 
         <div className="login-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="login-card-head">
             <div className="brand">FilingLens</div>
             <span className="chip soft-accent">{plan?.name} plan</span>
           </div>

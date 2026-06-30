@@ -366,6 +366,49 @@ h2 { font-size: clamp(40px, 4.5vw, 64px); }
 }
 .field-error { margin-top: 6px; font-size: 12px; color: var(--red); font-weight: 700; }
 
+/* ── Auth forms ── */
+.login-card .product-nav { display: inline-flex; }
+.login-card-head { display: flex; align-items: center; justify-content: space-between; }
+.auth-footnote { margin-top: 12px; font-size: 12px; color: var(--muted); text-align: right; }
+.auth-link { cursor: pointer; text-decoration: underline; }
+.form-error { margin: 12px 0 0; color: var(--red); font-size: 13px; font-weight: 700; }
+
+/* ── Password field ── */
+.pwd-wrap { position: relative; }
+.pwd-wrap .field-input { padding-right: 40px; }
+.pwd-toggle {
+  position: absolute; right: 12px; top: 50%; transform: translateY(-50%);
+  background: none; border: none; cursor: pointer; padding: 0;
+  color: var(--muted); display: flex; align-items: center; line-height: 1;
+}
+
+/* ── Panel form + compact actions ── */
+.panel-form { padding: 0 40px 32px; }
+.actions.form { margin-top: 26px; }
+
+/* ── Page section header (billing, etc.) ── */
+.page-head { display: flex; align-items: flex-start; justify-content: space-between; }
+.page-head-actions { flex-shrink: 0; padding-top: 8px; display: flex; gap: 14px; align-items: center; }
+.inline-confirm { display: flex; align-items: center; gap: 10px; }
+
+/* ── Text link (inline action as <button> or <Link>) ── */
+.text-link {
+  background: none; border: none; cursor: pointer; padding: 0;
+  font-size: 13px; font-weight: 750; font-family: inherit;
+  color: var(--ink); text-decoration: underline;
+}
+.text-link.red { color: var(--red); }
+.text-link.green { color: #22a05a; }
+.text-link.muted { color: var(--muted); font-weight: 400; }
+
+/* ── Stripe payment form ── */
+.stripe-field { border: 1px solid var(--line); border-radius: 10px; padding: 13px 14px; background: white; }
+.card-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.card-error { margin: 4px 0 0; color: #d94f4f; font-size: 13px; }
+
+/* ── Chip as interactive button ── */
+.chip.btn { border: none; cursor: pointer; }
+
 /* ── Progress timeline ── */
 .progress-timeline { display: grid; gap: 14px; padding: 36px; }
 .progress-step { display: grid; grid-template-columns: 36px 1fr auto; gap: 18px; align-items: center; padding: 18px 22px; background: #fbfbf7; border: 1px solid var(--line); border-radius: 22px; }
@@ -393,6 +436,86 @@ h2 { font-size: clamp(40px, 4.5vw, 64px); }
   from { opacity: 0; transform: translateY(12px); }
   to   { opacity: 1; transform: translateY(0); }
 }
+
+/* ── TopBar: actions, bell, notifications, avatar, user menu ── */
+.topbar-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+
+.cancel-chip {
+  font-size: 12px; font-weight: 750; color: var(--red);
+  background: #fff0f0; border: 1px solid #ffc5c5;
+  border-radius: 20px; padding: 4px 12px;
+  text-decoration: none; white-space: nowrap;
+}
+
+.bell-wrap { position: relative; }
+.bell-btn {
+  background: none; border: none; cursor: pointer; padding: 4px;
+  position: relative; display: flex; align-items: center;
+}
+.bell-badge {
+  position: absolute; top: 2px; right: 2px;
+  background: var(--accent); color: white;
+  border-radius: 50%; width: 14px; height: 14px;
+  font-size: 9px; font-weight: 860;
+  display: flex; align-items: center; justify-content: center; line-height: 1;
+}
+
+.notif-dropdown {
+  position: absolute; top: 38px; right: 0;
+  background: white; border: 1px solid var(--line);
+  border-radius: 14px; box-shadow: var(--shadow);
+  min-width: 280px; max-width: 340px; z-index: 100; overflow: hidden;
+}
+.notif-head { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); font-size: 13px; font-weight: 860; }
+.notif-empty { padding: 18px; font-size: 13px; color: var(--muted); }
+.notif-item {
+  padding: 11px 18px; font-size: 13px; font-weight: 500;
+  color: var(--ink); border-bottom: 1px solid var(--line);
+  background: white; cursor: default;
+}
+.notif-item.unread { font-weight: 750; background: var(--surface); }
+.notif-item.linked { cursor: pointer; }
+.notif-item:hover { background: var(--surface); }
+.notif-time { font-size: 11px; color: var(--muted); margin-top: 3px; }
+
+.avatar-wrap { position: relative; flex-shrink: 0; }
+.avatar {
+  width: 34px; height: 34px; border-radius: 50%;
+  background: var(--accent); color: white;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 860; letter-spacing: 0.02em;
+  cursor: pointer; user-select: none;
+}
+
+.user-dropdown {
+  position: absolute; top: 42px; right: 0;
+  background: white; border: 1px solid var(--line);
+  border-radius: 14px; box-shadow: var(--shadow);
+  min-width: 200px; z-index: 100; overflow: hidden;
+}
+.user-dropdown-head { padding: 14px 18px 10px; border-bottom: 1px solid var(--line); }
+.user-dropdown-name { font-size: 14px; font-weight: 860; color: var(--ink); }
+.user-dropdown-email { font-size: 12px; color: var(--muted); margin-top: 2px; }
+.user-dropdown-body { padding: 8px 0; }
+.user-dropdown-item {
+  display: block; width: 100%; text-align: left;
+  padding: 9px 18px; font-size: 13px; font-weight: 750;
+  color: var(--ink); background: none; border: none;
+  cursor: pointer; text-decoration: none;
+}
+.user-dropdown-item:hover { background: var(--surface); }
+.user-dropdown-item.danger { color: var(--red); }
+.user-dropdown-item.secondary { font-size: 12px; color: var(--muted); }
+.user-dropdown-divider { border-top: 1px solid var(--line); margin: 4px 0; }
+.user-dropdown-confirm { padding: 8px 18px; }
+.user-dropdown-confirm-text { font-size: 12px; color: var(--ink); margin-bottom: 8px; }
+.user-dropdown-confirm-actions { display: flex; gap: 8px; }
+.user-dropdown-confirm-actions button {
+  flex: 1; padding: 6px 0; font-size: 12px; font-weight: 750;
+  border-radius: 8px; cursor: pointer; border: none;
+}
+.user-dropdown-confirm-actions .btn-danger { color: white; background: var(--red); }
+.user-dropdown-confirm-actions .btn-cancel { color: var(--ink); background: var(--surface); border: 1px solid var(--line) !important; }
 
 /* ── Responsive ── */
 @media (max-width: 980px) {

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../api.js';
 
@@ -71,7 +71,7 @@ export default function ResetPassword() {
             <form onSubmit={handleSubmit}>
               <div className="login-field" style={{ marginTop: 24 }}>
                 <div className="field-label">New password</div>
-                <div style={{ position: 'relative' }}>
+                <div className="pwd-wrap">
                   <input
                     className="field-input"
                     type={show ? 'text' : 'password'}
@@ -79,10 +79,8 @@ export default function ResetPassword() {
                     onChange={(e) => setPassword(e.target.value)}
                     required
                     autoFocus
-                    style={{ paddingRight: 40 }}
                   />
-                  <button type="button" onClick={() => setShow(s => !s)} tabIndex={-1}
-                    style={{ position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)', fontSize: 16 }}>
+                  <button type="button" className="pwd-toggle" onClick={() => setShow(s => !s)} tabIndex={-1}>
                     {show ? <EyeOff /> : <Eye />}
                   </button>
                 </div>
@@ -97,8 +95,8 @@ export default function ResetPassword() {
                   required
                 />
               </div>
-              {error && <p style={{ marginTop: 12, color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{error}</p>}
-              <div className="actions" style={{ marginTop: 26 }}>
+              {error && <p className="form-error">{error}</p>}
+              <div className="actions form">
                 <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
                   {loading ? 'Saving…' : 'Set new password'}
                 </button>

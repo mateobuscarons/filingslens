@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
@@ -130,7 +130,7 @@ export default function AuthGate() {
         </div>
 
         <div className="login-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="login-card-head">
             <div className="brand">FilingLens</div>
             <span className="chip soft-accent">
               {tab === 'signin' ? 'Sign in' : tab === 'register' ? 'New account' : 'Reset'}
@@ -138,9 +138,9 @@ export default function AuthGate() {
           </div>
 
           {tab !== 'forgot' && (
-            <div className="product-nav" style={{ marginTop: 24, display: 'inline-flex' }}>
-              <span className={tab === 'signin' ? 'active' : ''} onClick={() => setTab('signin')} style={{ cursor: 'pointer' }}>Sign in</span>
-              <span className={tab === 'register' ? 'active' : ''} onClick={() => setTab('register')} style={{ cursor: 'pointer' }}>Register</span>
+            <div className="product-nav" style={{ marginTop: 24 }}>
+              <span className={tab === 'signin' ? 'active' : ''} onClick={() => setTab('signin')}>Sign in</span>
+              <span className={tab === 'register' ? 'active' : ''} onClick={() => setTab('register')}>Register</span>
             </div>
           )}
 
@@ -149,13 +149,13 @@ export default function AuthGate() {
               <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus error={errors.email} />
               <PasswordField label="Password" value={password} onChange={setPassword} error={errors.password} />
               <FormError msg={errors._form} />
-              <div className="actions" style={{ marginTop: 26 }}>
+              <div className="actions form">
                 <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
                   {loading ? 'Signing in…' : 'Sign in'}
                 </button>
               </div>
-              <p style={{ marginTop: 12, fontSize: 12, color: 'var(--muted)', textAlign: 'right' }}>
-                <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => { setTab('forgot'); setForgotSent(false); }}>
+              <p className="auth-footnote">
+                <span className="auth-link" onClick={() => { setTab('forgot'); setForgotSent(false); }}>
                   Forgot password?
                 </span>
               </p>
@@ -164,10 +164,10 @@ export default function AuthGate() {
 
           {tab === 'register' && (
             <form onSubmit={handleRegister}>
-              <div className="product-nav" style={{ marginTop: 16, display: 'inline-flex', gap: 4 }}>
-                <span className={mode === 'solo' ? 'active' : ''} onClick={() => setMode('solo')} style={{ cursor: 'pointer' }}>Solo</span>
-                <span className={mode === 'team-new' ? 'active' : ''} onClick={() => setMode('team-new')} style={{ cursor: 'pointer' }}>Team</span>
-                <span className={mode === 'team-join' ? 'active' : ''} onClick={() => setMode('team-join')} style={{ cursor: 'pointer' }}>Join team</span>
+              <div className="product-nav" style={{ marginTop: 16, gap: 4 }}>
+                <span className={mode === 'solo' ? 'active' : ''} onClick={() => setMode('solo')}>Solo</span>
+                <span className={mode === 'team-new' ? 'active' : ''} onClick={() => setMode('team-new')}>Team</span>
+                <span className={mode === 'team-join' ? 'active' : ''} onClick={() => setMode('team-join')}>Join team</span>
               </div>
 
               <Field label="Full name" value={name} onChange={setName} required autoFocus error={errors.name} />
@@ -186,7 +186,7 @@ export default function AuthGate() {
               )}
 
               <FormError msg={errors._form} />
-              <div className="actions" style={{ marginTop: 26 }}>
+              <div className="actions form">
                 <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
                   {loading ? 'Creating account…' : 'Continue'}
                 </button>
@@ -210,13 +210,13 @@ export default function AuthGate() {
             ) : (
               <form onSubmit={handleForgot}>
                 <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus error={errors.email} style={{ marginTop: 24 }} />
-                <div className="actions" style={{ marginTop: 26 }}>
+                <div className="actions form">
                   <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
                     {loading ? 'Sending…' : 'Send reset link'}
                   </button>
                 </div>
-                <p style={{ marginTop: 12, fontSize: 12, color: 'var(--muted)', textAlign: 'right' }}>
-                  <span style={{ cursor: 'pointer', textDecoration: 'underline' }} onClick={() => setTab('signin')}>
+                <p className="auth-footnote">
+                  <span className="auth-link" onClick={() => setTab('signin')}>
                     Back to sign in
                   </span>
                 </p>
@@ -250,25 +250,15 @@ function PasswordField({ label, value, onChange, error, ...rest }) {
   return (
     <div className="login-field">
       <div className="field-label">{label}</div>
-      <div style={{ position: 'relative' }}>
+      <div className="pwd-wrap">
         <input
           className="field-input"
           type={show ? 'text' : 'password'}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          style={{ paddingRight: 40 }}
           {...rest}
         />
-        <button
-          type="button"
-          onClick={() => setShow(s => !s)}
-          style={{
-            position: 'absolute', right: 12, top: '50%', transform: 'translateY(-50%)',
-            background: 'none', border: 'none', cursor: 'pointer', padding: 0,
-            color: 'var(--muted)', fontSize: 16, lineHeight: 1,
-          }}
-          tabIndex={-1}
-        >
+        <button type="button" className="pwd-toggle" onClick={() => setShow(s => !s)} tabIndex={-1}>
           {show ? <EyeOff /> : <Eye />}
         </button>
       </div>
@@ -279,7 +269,7 @@ function PasswordField({ label, value, onChange, error, ...rest }) {
 
 function FormError({ msg }) {
   if (!msg) return null;
-  return <p style={{ marginTop: 14, color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{msg}</p>;
+  return <p className="form-error">{msg}</p>;
 }
 
 function Eye() {
