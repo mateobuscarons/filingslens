@@ -1,9 +1,36 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
+import PasswordField from '../components/PasswordField.jsx';
 
-// The whole sign-in + register surface in one page. Three register modes:
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function validateSignIn({ email, password }) {
+  const e = {};
+  if (!EMAIL_RE.test(email)) e.email = 'Enter a valid email address.';
+  if (!password) e.password = 'Password is required.';
+  return e;
+}
+
+function validateRegister({ name, email, password, confirm, mode, firmName, inviteCode }) {
+  const e = {};
+  if (!name || name.trim().length < 2) e.name = 'Name must be at least 2 characters.';
+  if (!EMAIL_RE.test(email)) e.email = 'Enter a valid email address.';
+  if (password.length < 8) e.password = 'Password must be at least 8 characters.';
+  if (confirm !== password) e.confirm = 'Passwords do not match.';
+  if (mode === 'team-new' && !firmName.trim()) e.firmName = 'Firm name is required.';
+  if (mode === 'team-join' && !inviteCode.trim()) e.inviteCode = 'Invite code is required.';
+  return e;
+}
+
+function validateForgot({ email }) {
+  const e = {};
+  if (!EMAIL_RE.test(email)) e.email = 'Enter a valid email address.';
+  return e;
+}
+
+// Sign-in + register surface in one page. Three register modes:
 //   solo       — name, email, password
 //   team-new   — same + firmName + seatLimit
 //   team-join  — same + inviteCode (no firmName, no seats)
@@ -13,24 +40,25 @@ export default function AuthGate() {
   const { login } = useAuth();
   const navigate = useNavigate();
 
-  const [tab, setTab] = useState('signin'); // 'signin' | 'register'
+  const [tab, setTab] = useState('signin'); // 'signin' | 'register' | 'forgot'
   const [mode, setMode] = useState('solo'); // 'solo' | 'team-new' | 'team-join'
 
-  // shared
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  // team-new
+  const [confirm, setConfirm] = useState('');
   const [firmName, setFirmName] = useState('');
   const [seatLimit, setSeatLimit] = useState(5);
-  // team-join
   const [inviteCode, setInviteCode] = useState('');
 
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
 
   async function handleSignIn(e) {
     e.preventDefault();
+    const ve = validateSignIn({ email, password });
+    if (Object.keys(ve).length) { setErrors(ve); return; }
     setErrors({}); setLoading(true);
     try {
       const data = await apiFetch('/auth/login', {
@@ -38,16 +66,16 @@ export default function AuthGate() {
         body: JSON.stringify({ email, password }),
       });
       await login(data.token, data.user);
-      navigate('/', { replace: true }); // Root routes based on subscription state
+      navigate('/', { replace: true });
     } catch (err) {
-      // Don't use `instanceof ApiError` — Vite HMR can produce two class
-      // identities. Duck-type instead.
       setErrors({ _form: err?.message || 'Something went wrong. Try again.' });
     } finally { setLoading(false); }
   }
 
   async function handleRegister(e) {
     e.preventDefault();
+    const ve = validateRegister({ name, email, password, confirm, mode, firmName, inviteCode });
+    if (Object.keys(ve).length) { setErrors(ve); return; }
     setErrors({}); setLoading(true);
     const body = { mode, name, email, password };
     if (mode === 'team-new') { body.firmName = firmName; body.seatLimit = Number(seatLimit); }
@@ -58,10 +86,22 @@ export default function AuthGate() {
         body: JSON.stringify(body),
       });
       await login(data.token, data.user);
-      navigate('/', { replace: true }); // Root routes to /billing/setup for fresh users, /dashboard for team-join
+      navigate('/', { replace: true });
     } catch (err) {
-      // Duck-type instead of `instanceof ApiError` — survives HMR reloads.
       setErrors({ ...(err?.fields ?? {}), _form: err?.message || 'Something went wrong. Try again.' });
+    } finally { setLoading(false); }
+  }
+
+  async function handleForgot(e) {
+    e.preventDefault();
+    const ve = validateForgot({ email });
+    if (Object.keys(ve).length) { setErrors(ve); return; }
+    setErrors({}); setLoading(true);
+    try {
+      await apiFetch('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
+      setForgotSent(true);
+    } catch {
+      setForgotSent(true); // still show success to avoid email enumeration
     } finally { setLoading(false); }
   }
 
@@ -69,11 +109,11 @@ export default function AuthGate() {
     <section className="screen">
       <div className="login-grid">
         <div>
-          <p className="eyebrow">{tab === 'signin' ? 'Welcome back' : 'Get started'}</p>
+          <p className="eyebrow">{tab === 'signin' ? 'Welcome back' : tab === 'register' ? 'Get started' : 'Reset password'}</p>
           <h2>
-            {tab === 'signin'
-              ? 'Sign in to your analyst workspace.'
-              : 'Create your analyst workspace.'}
+            {tab === 'signin' ? 'Sign in to your analyst workspace.'
+              : tab === 'register' ? 'Create your analyst workspace.'
+              : 'Forgot your password?'}
           </h2>
           <p className="lead">
             For German equity analysts. Compare two filings, ask follow-ups,
@@ -97,38 +137,50 @@ export default function AuthGate() {
         </div>
 
         <div className="login-card">
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="login-card-head">
             <div className="brand">FilingLens</div>
-            <span className="chip soft-accent">{tab === 'signin' ? 'Sign in' : 'New account'}</span>
+            <span className="chip soft-accent">
+              {tab === 'signin' ? 'Sign in' : tab === 'register' ? 'New account' : 'Reset'}
+            </span>
           </div>
 
-          <div className="product-nav" style={{ marginTop: 24, display: 'inline-flex' }}>
-            <span className={tab === 'signin' ? 'active' : ''} onClick={() => setTab('signin')} style={{ cursor: 'pointer' }}>Sign in</span>
-            <span className={tab === 'register' ? 'active' : ''} onClick={() => setTab('register')} style={{ cursor: 'pointer' }}>Register</span>
-          </div>
+          {tab !== 'forgot' && (
+            <div className="product-nav" style={{ marginTop: 24 }}>
+              <span className={tab === 'signin' ? 'active' : ''} onClick={() => setTab('signin')}>Sign in</span>
+              <span className={tab === 'register' ? 'active' : ''} onClick={() => setTab('register')}>Register</span>
+            </div>
+          )}
 
-          {tab === 'signin' ? (
+          {tab === 'signin' && (
             <form onSubmit={handleSignIn}>
-              <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus required />
-              <Field label="Password" type="password" value={password} onChange={setPassword} required />
+              <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus error={errors.email} />
+              <PasswordField label="Password" value={password} onChange={setPassword} error={errors.password} />
               <FormError msg={errors._form} />
-              <div className="actions" style={{ marginTop: 26 }}>
+              <div className="actions form">
                 <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
                   {loading ? 'Signing in…' : 'Sign in'}
                 </button>
               </div>
+              <p className="auth-footnote">
+                <span className="auth-link" onClick={() => { setTab('forgot'); setForgotSent(false); }}>
+                  Forgot password?
+                </span>
+              </p>
             </form>
-          ) : (
+          )}
+
+          {tab === 'register' && (
             <form onSubmit={handleRegister}>
-              <div className="product-nav" style={{ marginTop: 16, display: 'inline-flex', gap: 4 }}>
-                <span className={mode === 'solo' ? 'active' : ''} onClick={() => setMode('solo')} style={{ cursor: 'pointer' }}>Solo</span>
-                <span className={mode === 'team-new' ? 'active' : ''} onClick={() => setMode('team-new')} style={{ cursor: 'pointer' }}>Team</span>
-                <span className={mode === 'team-join' ? 'active' : ''} onClick={() => setMode('team-join')} style={{ cursor: 'pointer' }}>Join team</span>
+              <div className="product-nav" style={{ marginTop: 16, gap: 4 }}>
+                <span className={mode === 'solo' ? 'active' : ''} onClick={() => setMode('solo')}>Solo</span>
+                <span className={mode === 'team-new' ? 'active' : ''} onClick={() => setMode('team-new')}>Team</span>
+                <span className={mode === 'team-join' ? 'active' : ''} onClick={() => setMode('team-join')}>Join team</span>
               </div>
 
               <Field label="Full name" value={name} onChange={setName} required autoFocus error={errors.name} />
               <Field label="Work email" type="email" value={email} onChange={setEmail} required error={errors.email} />
-              <Field label="Password (min. 8 chars)" type="password" value={password} onChange={setPassword} required error={errors.password} />
+              <PasswordField label="Password (min. 8 chars)" value={password} onChange={setPassword} error={errors.password} />
+              <PasswordField label="Confirm password" value={confirm} onChange={setConfirm} error={errors.confirm} />
 
               {mode === 'team-new' && (
                 <>
@@ -141,7 +193,7 @@ export default function AuthGate() {
               )}
 
               <FormError msg={errors._form} />
-              <div className="actions" style={{ marginTop: 26 }}>
+              <div className="actions form">
                 <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
                   {loading ? 'Creating account…' : 'Continue'}
                 </button>
@@ -150,6 +202,33 @@ export default function AuthGate() {
                 Next step: choose your plan and confirm payment.
               </p>
             </form>
+          )}
+
+          {tab === 'forgot' && (
+            forgotSent ? (
+              <>
+                <p style={{ marginTop: 24, fontSize: 14, color: 'var(--ink)' }}>
+                  If an account exists for <strong>{email}</strong>, a reset link is on its way.
+                </p>
+                <button className="button" style={{ marginTop: 20 }} onClick={() => setTab('signin')}>
+                  Back to sign in
+                </button>
+              </>
+            ) : (
+              <form onSubmit={handleForgot}>
+                <Field label="Work email" type="email" value={email} onChange={setEmail} autoFocus error={errors.email} style={{ marginTop: 24 }} />
+                <div className="actions form">
+                  <button className="button accent" type="submit" style={{ flex: 1 }} disabled={loading}>
+                    {loading ? 'Sending…' : 'Send reset link'}
+                  </button>
+                </div>
+                <p className="auth-footnote">
+                  <span className="auth-link" onClick={() => setTab('signin')}>
+                    Back to sign in
+                  </span>
+                </p>
+              </form>
+            )
           )}
         </div>
       </div>
@@ -175,5 +254,5 @@ function Field({ label, value, onChange, error, type = 'text', ...rest }) {
 
 function FormError({ msg }) {
   if (!msg) return null;
-  return <p style={{ marginTop: 14, color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{msg}</p>;
+  return <p className="form-error">{msg}</p>;
 }

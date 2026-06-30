@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import jsPDF from 'jspdf';
 import { apiFetch, ApiError } from '../api.js';
@@ -6,12 +6,6 @@ import { useAuth } from '../auth.jsx';
 import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
 
-// Report builder. Each item is rendered with its full content inline so a
-// viewer can read everything in one place:
-//   - Finding items show summary + prev/curr paragraph text + citations.
-//   - Q&A items show the question + the cited answer.
-// Notes attached to each item form a thread — any firm member can add to a
-// shared report; only the original note author can delete their own.
 function impactChipClass(impact) {
   if (impact === 'high') return 'chip red';
   if (impact === 'medium') return 'chip amber';
@@ -41,6 +35,7 @@ export default function Report() {
 
   const [report, setReport] = useState(null);
   const [items, setItems] = useState([]);
+  const [members, setMembers] = useState([]);
   const [editingTitle, setEditingTitle] = useState(false);
   const [title, setTitle] = useState('');
   const [loading, setLoading] = useState(true);
@@ -50,11 +45,15 @@ export default function Report() {
       setReport(data.report);
       setTitle(data.report.title);
       setItems(data.items);
+      if (user?.firmId) {
+        apiFetch(`/firms/${user.firmId}/members`)
+          .then(m => setMembers(m.filter(mb => mb._id !== user.id)))
+          .catch(() => {});
+      }
     }).finally(() => setLoading(false));
   }, [id]);
 
   const isOwner = report?.userId?._id === user?.id || report?.userId === user?.id;
-  // Who can add/delete items + add notes: owner OR any firm member when shared.
   const canEdit = isOwner || (report?.isShared && user?.firmId && report?.firmId === user?.firmId);
 
   async function saveTitle() {
@@ -83,13 +82,23 @@ export default function Report() {
     return updated;
   }
 
-  async function toggleShare() {
+  async function applyShare(all, userIds) {
     try {
-      const method = report.isShared ? 'DELETE' : 'POST';
-      const updated = await apiFetch(`/reports/${id}/share`, { method });
+      const updated = await apiFetch(`/reports/${id}/share`, {
+        method: 'POST',
+        body: JSON.stringify(all ? { all: true } : { userIds }),
+      });
       setReport((prev) => ({ ...prev, ...updated }));
-      toast.success(updated.isShared ? 'Shared with firm.' : 'Unshared.');
-    } catch (err) { toast.error(err instanceof ApiError ? err.message : 'Could not update sharing.'); }
+      toast.success(all ? 'Shared with everyone.' : userIds.length === 0 ? 'Unshared.' : `Shared with ${userIds.length} member(s).`);
+    } catch (err) { toast.error(err instanceof ApiError ? err.message : 'Could not share.'); }
+  }
+
+  async function unshare() {
+    try {
+      const updated = await apiFetch(`/reports/${id}/share`, { method: 'DELETE' });
+      setReport((prev) => ({ ...prev, ...updated }));
+      toast.success('Unshared.');
+    } catch (err) { toast.error(err instanceof ApiError ? err.message : 'Could not unshare.'); }
   }
 
   async function addNote(itemId, text) {
@@ -128,11 +137,13 @@ export default function Report() {
             report={report} title={title} setTitle={setTitle}
             editingTitle={editingTitle} setEditingTitle={setEditingTitle}
             saveTitle={saveTitle} isOwner={isOwner} user={user}
-            toggleShare={toggleShare}
+            members={members}
+            onShare={applyShare}
+            onUnshare={unshare}
             onDownload={() => downloadPdf(report, items)}
           />
 
-          <div style={{ display: 'grid', gap: 22, marginTop: 24 }}>
+          <div className="report-items">
             {items.length === 0 && (
               <p className="panel-sub">No items yet. Save a finding from the diff view or a Q&A answer.</p>
             )}
@@ -142,6 +153,7 @@ export default function Report() {
                 item={item}
                 currentUserId={user?.id}
                 canEdit={canEdit}
+                members={members}
                 onDelete={() => deleteItem(item._id)}
                 onPatch={(patch) => patchItem(item._id, patch)}
                 onAddNote={(text) => addNote(item._id, text)}
@@ -165,21 +177,47 @@ export default function Report() {
 
 // ---------- Header (title + share + download) -----------------------------
 
-function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, saveTitle, isOwner, user, toggleShare, onDownload }) {
+function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, saveTitle, isOwner, user, members, onShare, onUnshare, onDownload }) {
+  const [showPicker, setShowPicker] = useState(false);
+  const [selected, setSelected] = useState(report.sharedWith ?? []);
+  const pickerRef = useRef(null);
+
+  useEffect(() => {
+    function handleClick(e) {
+      if (pickerRef.current && !pickerRef.current.contains(e.target)) setShowPicker(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  function toggleMember(id) {
+    setSelected(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id]);
+  }
+
+  function applyShare(all) {
+    onShare(all, selected);
+    setShowPicker(false);
+  }
+
+  const isSharedPartially = !report.isShared && report.sharedWith?.length > 0;
+  const sharedLabel = report.isShared ? 'Shared with everyone'
+    : isSharedPartially ? `Shared with ${report.sharedWith.length} member(s)`
+    : 'Draft';
+
   return (
     <>
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 24 }}>
+      <div className="report-head">
         {editingTitle && isOwner ? (
-          <div style={{ flex: 1, display: 'flex', gap: 12 }}>
+          <div className="report-title-edit">
             <input
+              className="report-title-input"
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               autoFocus
               onKeyDown={(e) => { if (e.key === 'Enter') saveTitle(); if (e.key === 'Escape') setEditingTitle(false); }}
-              style={{ flex: 1, fontSize: 22, fontWeight: 860, border: 'none', borderBottom: '2px solid var(--ink)', background: 'transparent', fontFamily: 'inherit', outline: 'none', padding: '4px 0' }}
             />
-            <button className="button accent" onClick={saveTitle} style={{ minHeight: 36, padding: '0 16px', fontSize: 13 }}>Save</button>
-            <button className="button ghost" onClick={() => setEditingTitle(false)} style={{ minHeight: 36, padding: '0 16px', fontSize: 13 }}>Cancel</button>
+            <button className="button accent sm" onClick={saveTitle}>Save</button>
+            <button className="button ghost sm" onClick={() => setEditingTitle(false)}>Cancel</button>
           </div>
         ) : (
           <h3
@@ -191,26 +229,42 @@ function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, 
           </h3>
         )}
         {!editingTitle && (
-          <div style={{ display: 'flex', gap: 10, flexShrink: 0 }}>
-            <button className="button ghost" onClick={onDownload} style={{ minHeight: 38, padding: '0 16px', fontSize: 13 }}>
-              Download PDF
-            </button>
+          <div className="report-head-actions" ref={pickerRef}>
+            <button className="button ghost sm" onClick={onDownload}>Download PDF</button>
             {isOwner && user?.firmId && (
-              <button
-                className={`button ${report.isShared ? 'ghost' : 'accent'}`}
-                onClick={toggleShare}
-                style={{ minHeight: 38, padding: '0 16px', fontSize: 13 }}
-              >
-                {report.isShared ? 'Unshare' : 'Share with firm'}
-              </button>
+              <>
+                {(report.isShared || isSharedPartially) && (
+                  <button className="button ghost sm" onClick={onUnshare}>Unshare all</button>
+                )}
+                <button className="button accent sm" onClick={() => setShowPicker(s => !s)}>
+                  Share ▾
+                </button>
+                {showPicker && (
+                  <div className="share-picker">
+                    <div className="share-picker-item divider" onClick={() => applyShare(true)}>
+                      Everyone in firm
+                    </div>
+                    {members.map(m => (
+                      <div key={m._id} className="share-picker-item" onClick={() => toggleMember(m._id)}>
+                        <span className={selected.includes(m._id) ? 'pick-check active' : 'pick-check'} />
+                        {m.name}
+                      </div>
+                    ))}
+                    <div className="share-picker-foot">
+                      <button className="button accent" onClick={() => applyShare(false)}>
+                        {selected.length === 0 ? 'Remove all access' : `Share with ${selected.length} member(s)`}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}
       </div>
 
       <p className="panel-sub">
-        {report.isShared ? 'Shared with firm · ' : 'Draft · '}
-        {new Date(report.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+        {sharedLabel} · {new Date(report.createdAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
         {report.userId?.name ? ` · by ${report.userId.name}` : ''}
       </p>
     </>
@@ -219,16 +273,16 @@ function ReportHeader({ report, title, setTitle, editingTitle, setEditingTitle, 
 
 // ---------- Item display --------------------------------------------------
 
-function ItemCard({ item, currentUserId, canEdit, onDelete, onPatch, onAddNote, onRemoveNote }) {
+function ItemCard({ item, currentUserId, canEdit, members, onDelete, onPatch, onAddNote, onRemoveNote }) {
   return (
     <div className="report-item">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 16 }}>
-        <div style={{ flex: 1 }}>
+      <div className="item-body">
+        <div className="item-body-content">
           {item.kind === 'finding'
             ? <FindingBody item={item} canEdit={canEdit} onPatch={onPatch} />
             : <AnswerBody item={item} canEdit={canEdit} onPatch={onPatch} />}
         </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'flex-end' }}>
+        <div className="item-chips">
           {item.kind === 'finding' && item.target?.impact && (
             <span className={impactChipClass(item.target.impact)}>
               {item.target.impact === 'high' ? 'High' : item.target.impact === 'medium' ? 'Medium' : 'Low'}
@@ -239,34 +293,36 @@ function ItemCard({ item, currentUserId, canEdit, onDelete, onPatch, onAddNote, 
       </div>
 
       {item.addedByName && (
-        <div className="row-sub" style={{ marginTop: 8, fontSize: 12 }}>
-          Added by {item.addedByName}
-        </div>
+        <div className="row-sub">{item.addedByName} added this</div>
       )}
 
       <NotesPanel
         notes={item.notes ?? []}
         currentUserId={currentUserId}
         canAdd={canEdit}
+        members={members}
         onAdd={onAddNote}
         onRemove={onRemoveNote}
       />
 
       {canEdit && (
         <div className="row-sub" style={{ marginTop: 12 }}>
-          <span style={{ cursor: 'pointer', textDecoration: 'underline', color: 'var(--red)' }} onClick={onDelete}>
-            Remove item
-          </span>
+          <span className="item-delete" onClick={onDelete}>Remove item</span>
         </div>
       )}
     </div>
   );
 }
 
-// Inline-edit affordance for the displayed summary/answer text. Persists as
-// item.userSummary; when non-empty it overrides the LLM-generated text in
-// the report rendering (here and in the PDF export). The canonical
-// Finding/Question stays untouched, and "Revert" clears the override.
+function renderNoteText(text) {
+  const parts = text.split(/(@\S+)/g);
+  return parts.map((part, i) =>
+    part.startsWith('@')
+      ? <span key={i} className="mention">{part}</span>
+      : part
+  );
+}
+
 function EditableSummary({ originalText, override, canEdit, onPatch, variant = 'title', placeholder = '' }) {
   const hasOverride = typeof override === 'string' && override.length > 0;
   const displayed = hasOverride ? override : originalText;
@@ -326,7 +382,7 @@ function EditableSummary({ originalText, override, canEdit, onPatch, variant = '
   return (
     <div className="item-editable">
       <div className={textClass}>
-        {displayed || <em style={{ color: 'var(--muted)' }}>{placeholder}</em>}
+        {displayed || <em className="text-muted">{placeholder}</em>}
         {hasOverride && <span className="chip item-edited-chip">Edited</span>}
       </div>
       {canEdit && (
@@ -338,9 +394,39 @@ function EditableSummary({ originalText, override, canEdit, onPatch, variant = '
   );
 }
 
-function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
+function NotesPanel({ notes, currentUserId, canAdd, members = [], onAdd, onRemove }) {
   const [text, setText] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState(null);
+  const [mentionAt, setMentionAt] = useState(0);
+  const textareaRef = useRef(null);
+
+  function handleChange(e) {
+    const val = e.target.value;
+    setText(val);
+    const cursor = e.target.selectionStart;
+    const before = val.slice(0, cursor);
+    const match = before.match(/@(\w*)$/);
+    if (match && members.length > 0) {
+      setMentionQuery(match[1].toLowerCase());
+      setMentionAt(cursor - match[0].length);
+    } else {
+      setMentionQuery(null);
+    }
+  }
+
+  function pickMember(member) {
+    const before = text.slice(0, mentionAt);
+    const after = text.slice(mentionAt + 1 + (mentionQuery?.length ?? 0));
+    setText(before + '@' + member.name + ' ' + after);
+    setMentionQuery(null);
+    textareaRef.current?.focus();
+  }
+
+  const allOption = mentionQuery !== null && 'all'.startsWith(mentionQuery) ? [{ _id: '__all__', name: 'all' }] : [];
+  const suggestions = mentionQuery !== null
+    ? [...allOption, ...members.filter(m => m.name.toLowerCase().startsWith(mentionQuery))].slice(0, 6)
+    : [];
 
   async function submit(e) {
     e?.preventDefault?.();
@@ -351,7 +437,6 @@ function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
       await onAdd(value);
       setText('');
     } catch (err) {
-      // surface gently — the row stays so the user can retry
       console.error(err);
     } finally {
       setSubmitting(false);
@@ -365,9 +450,7 @@ function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
         <span className="notes-count">{notes.length}</span>
       </div>
 
-      {notes.length === 0 && (
-        <p className="notes-empty">No notes yet.</p>
-      )}
+      {notes.length === 0 && <p className="notes-empty">No notes yet.</p>}
 
       {notes.map((n) => (
         <div className="note" key={n._id}>
@@ -375,23 +458,32 @@ function NotesPanel({ notes, currentUserId, canAdd, onAdd, onRemove }) {
             <span className="note-author">{n.authorName || 'Member'}</span>
             <span className="note-time">{formatRelative(n.createdAt)}</span>
             {n.authorId === currentUserId && (
-              <button className="note-delete" onClick={() => onRemove(n._id)} title="Delete this note">
-                ×
-              </button>
+              <button className="note-delete" onClick={() => onRemove(n._id)} title="Delete this note">×</button>
             )}
           </div>
-          <p className="note-text">{n.text}</p>
+          <p className="note-text">{renderNoteText(n.text)}</p>
         </div>
       ))}
 
       {canAdd && (
         <form className="note-compose" onSubmit={submit}>
+          {suggestions.length > 0 && (
+            <div className="mention-picker">
+              {suggestions.map(m => (
+                <div key={m._id} className="mention-picker-item" onClick={() => pickMember(m)}>
+                  @{m.name}
+                </div>
+              ))}
+            </div>
+          )}
           <textarea
+            ref={textareaRef}
             value={text}
-            onChange={(e) => setText(e.target.value)}
-            placeholder="Add a note for the team…"
+            onChange={handleChange}
+            placeholder="Add a note… type @ to mention a team member"
             rows={2}
             onKeyDown={(e) => {
+              if (e.key === 'Escape') setMentionQuery(null);
               if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(e);
             }}
           />
@@ -421,13 +513,9 @@ function FindingBody({ item, canEdit, onPatch }) {
       <div className="row-sub" style={{ marginTop: 4 }}>
         Finding · {t.section ?? '—'} · {findingTypeLabel(t.type)}
       </div>
-      {t.excerpt && (
-        <p style={{ marginTop: 12, fontSize: 14, lineHeight: 1.5, color: 'var(--ink)', whiteSpace: 'pre-wrap' }}>
-          {t.excerpt}
-        </p>
-      )}
+      {t.excerpt && <p className="finding-excerpt">{t.excerpt}</p>}
       {cites.length > 0 && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+        <div className="cite-row">
           {cites.map((c, i) => <span key={i} className="chip soft-accent">FY{c.filingYear} · p. {c.page}</span>)}
         </div>
       )}
@@ -453,11 +541,11 @@ function AnswerBody({ item, canEdit, onPatch }) {
             placeholder="Write your own answer…"
           />
         ) : (
-          <em style={{ color: 'var(--muted)' }}>No answer (status: {t.status}).</em>
+          <em className="text-muted">No answer (status: {t.status}).</em>
         )}
       </div>
       {cites.length > 0 && (
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+        <div className="cite-row">
           {cites.map((c, i) => (
             <span key={i} className="chip soft-accent">FY{c.filingYear} · p. {c.page}</span>
           ))}
@@ -508,7 +596,6 @@ function downloadPdf(report, items) {
     writeLines(`${idx + 1}. ${item.kind === 'finding' ? 'Finding' : 'Q&A'}`, { size: 13, bold: true });
     y += 2;
 
-    // Use the analyst override when present, else the LLM original.
     const overrideText = item.userSummary && item.userSummary.length > 0 ? item.userSummary : null;
     if (item.kind === 'finding') {
       const headline = overrideText ?? t.summary;

@@ -1,12 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../api.js';
 import { useAuth } from '../auth.jsx';
 import { useToast } from '../notifications.jsx';
 import TopBar from '../components/TopBar.jsx';
 
 // Members list + Invites panel. Admin-only (route is wrapped in AdminRoute).
-// Invites work like dev-mode forgot-password: server returns the code,
-// admin sees it, admin shares it manually with the invitee.
 export default function TeamSettings() {
   const { user } = useAuth();
   const toast = useToast();
@@ -32,8 +30,14 @@ export default function TeamSettings() {
 
   useEffect(() => { refresh(); /* eslint-disable-line */ }, [firmId]);
 
+  const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
   async function handleInvite(e) {
     e.preventDefault();
+    const ve = {};
+    if (!name.trim() || name.trim().length < 2) ve.name = 'Name must be at least 2 characters.';
+    if (!EMAIL_RE.test(email)) ve.email = 'Enter a valid email address.';
+    if (Object.keys(ve).length) { setErrors(ve); return; }
     setInviting(true); setErrors({});
     try {
       const invite = await apiFetch(`/firms/${firmId}/invites`, {
@@ -42,7 +46,7 @@ export default function TeamSettings() {
       });
       setInvites((prev) => [invite, ...prev]);
       setName(''); setEmail('');
-      toast.success(`Invite code ${invite.code} created. Share it with ${invite.name}.`);
+      toast.success(`Invite sent to ${invite.email}. They'll receive a code by email.`);
     } catch (err) {
       if (err instanceof ApiError) setErrors(err.fields ?? { _form: err.message });
       else toast.error('Could not create invite.');
@@ -114,7 +118,7 @@ export default function TeamSettings() {
                     <div className="row-sub">{m.email} · {m.role === 'firm_admin' ? 'Admin' : 'Analyst'}</div>
                   </div>
                   {m._id !== user.id && (
-                    <button className="chip red" style={{ border: 'none', cursor: 'pointer' }} onClick={() => removeMember(m)}>
+                    <button className="chip red btn" onClick={() => removeMember(m)}>
                       Delete account
                     </button>
                   )}
@@ -128,10 +132,10 @@ export default function TeamSettings() {
             <div className="panel-head">
               <div>
                 <h3 className="panel-title">Invite a member</h3>
-                <p className="panel-sub">We generate a code. Share it; the invitee registers with it.</p>
+                <p className="panel-sub">An invite code is emailed directly to the invitee. They register using it.</p>
               </div>
             </div>
-            <form onSubmit={handleInvite} style={{ padding: '0 40px 32px' }}>
+            <form onSubmit={handleInvite} className="panel-form">
               <div className="login-field">
                 <div className="field-label">Full name</div>
                 <input className="field-input" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -142,27 +146,23 @@ export default function TeamSettings() {
                 <input className="field-input" type="email" value={email} onChange={(e) => setEmail(e.target.value)} required />
                 {errors.email && <div className="field-error">{errors.email}</div>}
               </div>
-              {errors._form && <p style={{ color: 'var(--red)', fontSize: 13, fontWeight: 700 }}>{errors._form}</p>}
+              {errors._form && <p className="form-error">{errors._form}</p>}
               <div className="actions">
                 <button className="button accent" type="submit" disabled={inviting || seatsUsed >= (firm?.seatLimit ?? 0)}>
-                  {inviting ? 'Creating…' : 'Create invite code'}
+                  {inviting ? 'Sending…' : 'Send invite'}
                 </button>
               </div>
             </form>
 
-            {invites.length > 0 && (
+            {pendingInvites.length > 0 && (
               <div className="row-list">
-                {invites.map((inv) => (
+                {pendingInvites.map((inv) => (
                   <div className="data-row" key={inv._id}>
                     <div>
-                      <div className="row-title" style={{ fontFamily: 'monospace' }}>{inv.code}</div>
-                      <div className="row-sub">{inv.name} · {inv.email} · {inv.status}</div>
+                      <div className="row-title">{inv.name}</div>
+                      <div className="row-sub">{inv.email}</div>
                     </div>
-                    {inv.status === 'pending' && (
-                      <button className="chip" style={{ border: 'none', cursor: 'pointer' }} onClick={() => revoke(inv)}>
-                        Revoke
-                      </button>
-                    )}
+                    <button className="chip btn" onClick={() => revoke(inv)}>Revoke</button>
                   </div>
                 ))}
               </div>
