@@ -30,12 +30,18 @@ function validateForgot({ email }) {
   return e;
 }
 
+// Sign-in + register surface in one page. Three register modes:
+//   solo       — name, email, password
+//   team-new   — same + firmName + seatLimit
+//   team-join  — same + inviteCode (no firmName, no seats)
+// After register the AuthProvider has no subscription yet, so the route
+// guard sends the user to /billing/setup.
 export default function AuthGate() {
   const { login } = useAuth();
   const navigate = useNavigate();
 
   const [tab, setTab] = useState('signin'); // 'signin' | 'register' | 'forgot'
-  const [mode, setMode] = useState('solo');
+  const [mode, setMode] = useState('solo'); // 'solo' | 'team-new' | 'team-join'
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
